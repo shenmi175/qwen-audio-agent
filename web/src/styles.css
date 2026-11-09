@@ -354,6 +354,9 @@ html[data-desktop="orb"] #root {
   border-radius: 11px;
 }
 
+.connection-control { flex-shrink: 0; }
+.composer-send:disabled, button.voice:disabled, .video-toggle:disabled { opacity: .45; cursor: not-allowed; }
+
 header {
   height: 68px;
   padding: 0 28px;
@@ -1590,6 +1593,9 @@ article.user .message-body .inline-code { background: #5e44c9; color: #f0eaff; }
 @media (max-width: 600px) {
   header { padding: 0 14px; }
   .brand small, header .ghost, .backend, .model-status small { display: none; }
+  header .connection-control { display: inline-block; flex-shrink: 0; padding: 8px; font-size: 12px; }
+  header:has(.connection-control) { flex-wrap: wrap; height: auto; min-height: 68px; padding-block: 10px; gap: 8px; }
+  header:has(.connection-control) .brand { flex: 1 1 55%; }
   .model-status { max-width: min(42vw, 220px); }
   .workspace { padding: 24px 0 14px; }
   .orb:not(.desktop-orb) { width: 92px; height: 92px; }

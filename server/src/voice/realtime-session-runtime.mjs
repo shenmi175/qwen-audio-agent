@@ -20,6 +20,7 @@ import { RealtimeProviderSession } from './realtime-provider-session.mjs'
 import { VisualInputBuffer } from './visual-input-buffer.mjs'
 import { RealtimeRecoveryContext } from './realtime-recovery-context.mjs'
 import { SleepController } from './sleep-controller.mjs'
+import { createConnectionIdleController } from './connection-idle.mjs'
 import { isResponseActivityEvent, realtimeResponseId } from './response-lifecycle.mjs'
 import { frontendSourceToolDefinitions } from '../frontend/tools/frontend-tool-source.mjs'
 import { createGatewaySystemEventDelivery, GatewaySystemEvent } from '../delivery/gateway-system-event.mjs'
@@ -143,6 +144,7 @@ export function createRealtimeSessionRuntime({
   const transcripts = new TurnTranscripts()
   const turnCitations = new TurnCitations()
   let realtimeSession
+  let connectionIdle
   let visualInput
   const clearVisualInput = () => {
     realtimeSession?.clearPendingImage?.()
@@ -252,6 +254,7 @@ export function createRealtimeSessionRuntime({
       taskCoordinator.announcePendingInputs()
     },
     onReady: createdFrontend => {
+      connectionIdle.connected()
       const resumedFromSleep = waking
       waking = false
       if (outputEnabled) taskCoordinator.claimPendingNotifications()
@@ -275,6 +278,7 @@ export function createRealtimeSessionRuntime({
       }
     },
     onDisconnected: () => {
+      connectionIdle.disconnected()
       taskCoordinator.resetPresentation()
       clearVisualInput()
       clearResponseCandidate()
@@ -304,6 +308,26 @@ export function createRealtimeSessionRuntime({
       ? { createFrontend: realtimeFrontendFactory }
       : {}),
   })
+  connectionIdle = createConnectionIdleController({
+    timeoutMs: config.realtimeIdleTimeoutMs,
+    isBusy: () => {
+      // A browser may never start audio (for example, autoplay was denied).
+      // Completed generation awaiting its first receipt is not active playback.
+      const waitingForPlayback = [...(presentationRuntime?.entries() || [])]
+        .some(([, context]) => context.hasAudio && context.responseDone && !context.playbackStarted)
+      return !realtimeSession.ready
+        || turns.userSpeaking
+        || Boolean(realtimeSession.frontend?.activeResponses?.size)
+        || Boolean(responseTurnCandidate)
+        || (announcementWindow.isBlocked() && !waitingForPlayback)
+    },
+    disconnect: () => {
+      connectionLogger.info('realtime.idle_disconnect', {
+        timeoutMs: config.realtimeIdleTimeoutMs,
+      })
+      deactivate(null, 'idle_timeout')
+    },
+  })
   visualInput = new VisualInputBuffer({
     onFrame: image => realtimeSession.appendImage(image),
   })
@@ -331,8 +355,9 @@ export function createRealtimeSessionRuntime({
     if (inputEnabled) realtimeSession.setInputMuted(false)
     emit({ type: GatewayServerEvent.INPUT_RESUME })
   }
-  const deactivate = holder => {
+  const deactivate = (holder, reason) => {
     if (closed) return
+    connectionIdle.disconnected()
     sleeping = false
     waking = false
     presenceController.wake()
@@ -346,6 +371,7 @@ export function createRealtimeSessionRuntime({
     emit({
       type: 'voice.deactivated',
       holder: holder || null,
+      ...(reason ? { reason } : {}),
     })
   }
   const activateVoiceClient = ({
@@ -584,6 +610,7 @@ export function createRealtimeSessionRuntime({
 
   const handleEvent = event => {
     if (closed) return
+    if (isSleepActivityEvent(event)) connectionIdle.activity()
     if (isSleepActivityEvent(event)) sleepController?.recordActivity()
     if (isResponseActivityEvent(event)) presentationRuntime.begin(event)
     if (inputs.handleProviderEvent(event)) return
@@ -909,6 +936,15 @@ export function createRealtimeSessionRuntime({
 
   const handleClientEvent = (event, { descriptor: nextDescriptor = descriptor, capabilities: negotiatedCapabilities = [], capabilitiesNegotiated = false } = {}) => {
     if (closed) return
+    if ([
+      GatewayClientEvent.TEXT_MESSAGE,
+      GatewayClientEvent.INPUT_MESSAGE,
+      GatewayClientEvent.UNMUTE,
+      GatewayClientEvent.INPUT_UNMUTE,
+      GatewayClientEvent.PLAYBACK_STARTED,
+      GatewayClientEvent.PLAYBACK_ENDED,
+      GatewayClientEvent.PLAYBACK_CANCELLED,
+    ].includes(event.type)) connectionIdle.activity()
     if (event.type === GatewayClientEvent.CONNECT) {
       descriptor = nextDescriptor
       connectionLogger.info('voice_client.configured', {
@@ -1228,6 +1264,7 @@ export function createRealtimeSessionRuntime({
     close() {
       if (closed) return
       closed = true
+      connectionIdle.close()
       toolScope.abort(new Error('Client disconnected'))
       releaseVoiceClient()
       taskCoordinator.close()

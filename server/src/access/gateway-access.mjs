@@ -152,7 +152,7 @@ export class GatewayDeviceRegistry {
       .map(device => [device.id, { ...device }]))
   }
 
-  create({ ownerId, device = {} } = {}) {
+  create({ ownerId, device = {}, share = null } = {}) {
     // 128 bits is sufficient for an online bearer credential and keeps the
     // browser connection QR within a much smaller QR version.
     const token = randomBytes(16).toString('base64url')
@@ -169,6 +169,7 @@ export class GatewayDeviceRegistry {
       label: clean(device.label).slice(0, 80),
       createdAt: this.now(),
       lastUsedAt: null,
+      ...(share ? { shareId: share.id, sharedBy: share.ownerId } : {}),
     }
     this.devices.set(id, record)
     this.persist()
@@ -230,6 +231,7 @@ export class GatewayDeviceRegistry {
       label: record.label,
       createdAt: record.createdAt,
       lastUsedAt: record.lastUsedAt,
+      ...(record.shareId ? { shareId: record.shareId, sharedBy: record.sharedBy } : {}),
     }
   }
 
@@ -334,13 +336,66 @@ export class GatewayAccessManager {
     })
   }
 
+  createBrowserShare(ownerId) {
+    this.prunePairingTickets()
+    if (this.listBrowserShares(ownerId).filter(share => share.state === 'pending').length >= 20) {
+      throw new Error('待使用的分享过多，请先撤销旧分享')
+    }
+    const ticket = this.createPairingTicket({
+      ownerId: `user_guest_${randomBytes(12).toString('hex')}`,
+    })
+    const share = { id: `share_${randomBytes(12).toString('hex')}`, ownerId }
+    this.pairingTickets.get(digest(ticket.code)).share = share
+    return { ...ticket, id: share.id }
+  }
+
+  listBrowserShares(ownerId) {
+    this.prunePairingTickets()
+    const shares = new Map()
+    for (const ticket of this.pairingTickets.values()) {
+      if (ticket.share?.ownerId !== ownerId) continue
+      shares.set(ticket.share.id, {
+        id: ticket.share.id, state: 'pending', expiresAt: ticket.expiresAt,
+      })
+    }
+    for (const device of this.deviceRegistry.list()) {
+      if (device.sharedBy !== ownerId || !device.shareId) continue
+      shares.set(device.shareId, {
+        id: device.shareId, state: 'connected', createdAt: device.createdAt,
+      })
+    }
+    return [...shares.values()]
+  }
+
+  revokeBrowserShare(id, ownerId) {
+    let found = false
+    const credentials = []
+    for (const [key, ticket] of this.pairingTickets) {
+      if (ticket.share?.id !== id || ticket.share.ownerId !== ownerId) continue
+      this.pairingTickets.delete(key)
+      found = true
+    }
+    for (const device of this.deviceRegistry.list()) {
+      if (device.shareId !== id || device.sharedBy !== ownerId) continue
+      credentials.push(this.deviceRegistry.credentialId(device.id, device.ownerId))
+      this.deviceRegistry.revoke(device.id, device.ownerId)
+      found = true
+    }
+    return found ? credentials : null
+  }
+
   redeemPairingTicket(code, { device } = {}) {
     this.prunePairingTickets()
     const codeHash = digest(clean(code))
     const record = this.pairingTickets.get(codeHash)
     if (!record || record.expiresAt <= this.now()) return null
     this.pairingTickets.delete(codeHash)
-    return this.deviceRegistry.create({ ownerId: record.ownerId, device })
+    return this.deviceRegistry.create({
+      ownerId: record.ownerId,
+      // Browser-share recipients cannot choose IDs belonging to other devices.
+      device: record.share ? { type: device?.type, label: device?.label } : device,
+      share: record.share,
+    })
   }
 
   issueCookie(res, identity, req) {

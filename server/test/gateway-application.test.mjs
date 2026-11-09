@@ -1574,3 +1574,67 @@ test('health client-input capability uses authenticated owner scope and local ag
   assert.equal(local.body.voiceInput.clients.length, 2)
   assert.equal(calls.at(-1), undefined)
 })
+
+test('WebUI QR sharing requires the owner, uses HTTPS, pairs a guest once and revokes access', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'qwa-browser-share-api-'))
+  const token = 'web-share-owner-token-over-24-characters'
+  const application = createTestGatewayApplication({
+    config: { ...config, host: '127.0.0.1', port: 0,
+      gatewayAccessToken: token, gatewayAccessKeys: '',
+      gatewayDeviceStatePath: join(directory, 'devices.json'),
+      gatewayShareOrigin: 'https://voice.example.test:8443',
+      gatewayShareSetupOrigin: 'http://192.168.77.113:3080',
+      dataDirectory: directory,
+    },
+    parentPort: null, autoStart: false, frontendMcp: null, frontendOpenApi: null,
+  })
+  t.after(async () => { await application.close(); rmSync(directory, { recursive: true, force: true }) })
+  application.start()
+  if (!application.server.listening) await once(application.server, 'listening')
+  const { port } = application.server.address()
+  const headers = { Host: 'voice.example.test:8443', Origin: 'https://voice.example.test:8443',
+    'X-Forwarded-Proto': 'https', Authorization: `Bearer ${token}` }
+  const api = (path = '', method = 'GET', customHeaders = headers, body) => requestJson({
+    port, path: `/api/access/${path}`, method, headers: customHeaders, body,
+  })
+  assert.equal((await api('shares', 'POST', { Host: headers.Host })).status, 401)
+  assert.equal((await api('shares', 'POST', { ...headers, Origin: 'https://evil.example' })).status, 403)
+  const created = await api('shares', 'POST')
+  assert.equal(created.status, 201)
+  assert.equal(created.headers['cache-control'], 'no-store')
+  const share = created.body
+  assert.equal(new URL(share.url).origin, 'http://192.168.77.113:3080')
+  assert.equal(new URL(share.url).pathname, '/join')
+  assert.equal(new URL(share.secureUrl).origin, 'https://voice.example.test:8443')
+  assert.match(new URL(share.secureUrl).hash, /^#[A-Za-z0-9_-]{14}$/)
+  assert.match(share.qrCode, /^data:image\/png;base64,iVBOR/)
+  assert.ok(share.expiresAt > Date.now() && share.expiresAt <= Date.now() + 300000)
+  assert.equal(JSON.stringify(share).includes(token), false)
+  assert.equal((await api('shares')).body.shares[0].state, 'pending')
+  const code = new URL(share.secureUrl).hash.slice(1)
+  const paired = await api('pair', 'POST', { Host: headers.Host, Origin: headers.Origin, 'X-Forwarded-Proto': 'https' }, { code })
+  assert.equal(paired.status, 200)
+  assert.match(paired.body.owner_id, /^user_guest_/)
+  assert.notEqual(paired.body.owner_id, config.personalOwnerId)
+  const guestHeaders = { ...headers, Authorization: `Bearer ${paired.body.access_token}` }
+  for (const method of ['GET', 'POST', 'DELETE']) {
+    assert.equal((await api(method === 'DELETE' ? `shares/${share.id}` : 'shares', method, guestHeaders)).status, 403)
+  }
+  assert.equal((await api('pair', 'POST', headers, { code })).status, 401)
+  assert.equal((await api('shares')).body.shares[0].state, 'connected')
+  assert.equal((await api(`shares/${share.id}`, 'DELETE')).status, 204)
+  assert.equal((await requestJson({ port, path: '/api/health', headers: guestHeaders })).status, 401)
+  assert.equal((await api('shares')).body.shares.length, 0)
+  const local = { Host: `127.0.0.1:${port}` }
+  // An unconfigured HTTP deployment must not mint insecure invitations.
+  const other = createTestGatewayApplication({ config: { ...config, host: '127.0.0.1', port: 0,
+    gatewayShareOrigin: '', gatewayShareSetupOrigin: '', gatewayAccessToken: '', gatewayAccessKeys: '',
+    gatewayDeviceStatePath: join(directory, 'other-devices.json'), dataDirectory: directory },
+    parentPort: null, autoStart: false, frontendMcp: null, frontendOpenApi: null })
+  t.after(() => other.close())
+  other.start()
+  if (!other.server.listening) await once(other.server, 'listening')
+  const otherPort = other.server.address().port
+  assert.equal((await requestJson({ port: otherPort, path: '/api/access/shares', method: 'POST',
+    headers: { ...local, Host: `127.0.0.1:${otherPort}` } })).status, 409)
+})

@@ -205,6 +205,7 @@ export function releasesManualInputGuard(event, turnId = '') {
 
 export default function useRealtimeVoice({
   sessionId,
+  connectionEnabled = true,
   enabled,
   suspended = false,
   outputMuted = false,
@@ -649,6 +650,13 @@ export default function useRealtimeVoice({
   }, [suspended])
 
   useEffect(() => {
+    if (!connectionEnabled) {
+      setError('')
+      setVisualError(false)
+      dispatchClientState({ type: GatewayServerEvent.GATEWAY_DISCONNECTED })
+      dispatchClientState({ type: GatewayServerEvent.VOICE_STATE, state: 'idle' })
+      return undefined
+    }
     const mutedResponses = mutedPlaybackResponses.current
     const handleEvent = event => {
       dispatchClientState(event)
@@ -841,6 +849,7 @@ export default function useRealtimeVoice({
     clientToolsSignature,
     publishPresence,
     clientLabel,
+    connectionEnabled,
     connectionAttempt,
     clientStatesSignature,
     clientType,

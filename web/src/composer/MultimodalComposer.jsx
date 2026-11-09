@@ -35,11 +35,14 @@ function filePart(file, sourceType = 'file') {
 export default function MultimodalComposer({
   onSend,
   compact = false,
+  disabled = false,
+  visible = true,
 }) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
   const [error, setError] = useState('')
   const [photoOpen, setPhotoOpen] = useState(false)
+  useEffect(() => { if (!visible) setPhotoOpen(false) }, [visible])
   const picker = useRef(null)
   const draftGeneration = useRef(0)
   useEffect(() => () => { draftGeneration.current += 1 }, [])
@@ -66,6 +69,7 @@ export default function MultimodalComposer({
 
   const submit = event => {
     event.preventDefault()
+    if (disabled) return
     const content = text.trim()
     if (!content && !attachments.length) return
     const parts = withAttachmentAnchors([
@@ -158,7 +162,7 @@ export default function MultimodalComposer({
           if (event.key === 'Enter' && !event.shiftKey) submit(event)
         }}
       />
-      <button className="composer-send" type="submit">{t('发送')}</button>
+      <button className="composer-send" type="submit" disabled={disabled}>{t('发送')}</button>
     </div>
     {error && <small className="composer-error" role="alert">{error}</small>}
   </form>

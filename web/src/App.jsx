@@ -22,6 +22,12 @@ import PermissionActions from './PermissionActions.jsx'
 import DesktopFluidOrb from './desktop/DesktopFluidOrb.jsx'
 import DesktopSpriteOrb from './desktop/DesktopSpriteOrb.jsx'
 import KnowledgeLibraryPanel from './KnowledgeLibraryPanel.jsx'
+import WebVoiceOrb, { WebOrbVisual } from './web-ui/WebVoiceOrb.jsx'
+import WebPreferences from './web-ui/WebPreferences.jsx'
+import { webConnectionIndicator } from './web-ui/connection-status.js'
+import WebShareDialog from './web-ui/WebShareDialog.jsx'
+import { loadWebPreferences, normalizeWebPreferences, WEB_UI_PREFERENCES_KEY } from './web-ui/preferences.js'
+import './web-ui/web-ui.css'
 import {
   desktopOrbClassName,
   resolveOrbVisualState,
@@ -215,6 +221,21 @@ export default function App() {
     return () => window.removeEventListener('languagechange', refreshLanguage)
   }, [])
   const [sessionId, setSessionId] = useState(getSessionId)
+  const [webPreferences, setWebPreferences] = useState(() => loadWebPreferences(localStorage, window.location.search))
+  const [webSettingsOpen, setWebSettingsOpen] = useState(false)
+  const [webShareOpen, setWebShareOpen] = useState(false)
+  const [webCapabilities, setWebCapabilities] = useState({ knowledge: false })
+  useEffect(() => {
+    if (!desktopOrbMode) {
+      try { localStorage.setItem(WEB_UI_PREFERENCES_KEY, JSON.stringify(webPreferences)) } catch {}
+    }
+  }, [webPreferences])
+  const [connectionEnabled, setConnectionEnabled] = useState(() => (
+    desktopOrbMode || sessionStorage.getItem('qwaudio.connection-enabled') !== 'false'
+  ))
+  useEffect(() => {
+    if (!desktopOrbMode) sessionStorage.setItem('qwaudio.connection-enabled', String(connectionEnabled))
+  }, [connectionEnabled])
   const [voiceEnabled, setVoiceEnabled] = useState(() => initialVoiceEnabled({
     desktopOrbMode,
     clientType: activeClientType,
@@ -415,14 +436,14 @@ export default function App() {
     // The orb does not mount the message list. Opening a panel (or a new
     // session) should follow the latest message, even if history is unchanged.
     stickToBottom.current = true
-  }, [desktopSurfaceMode, sessionId])
+  }, [desktopSurfaceMode, webPreferences.surface, sessionId])
 
   useLayoutEffect(() => {
     const container = messagesRef.current
     if (container && stickToBottom.current) {
       container.scrollTop = container.scrollHeight
     }
-  }, [messages, agentTasks, desktopSurfaceMode, sessionId])
+  }, [messages, agentTasks, desktopSurfaceMode, webPreferences.surface, sessionId])
 
   useEffect(() => () => {
     taskDismissTimers.current.forEach(timer => clearTimeout(timer))
@@ -446,6 +467,7 @@ export default function App() {
           label: payload.realtimeLabel || payload.realtimeProvider || 'Realtime Agent',
         })
         setModelStatus(realtimeModelStatus(payload))
+        setWebCapabilities({ knowledge: payload.frontendKnowledge?.configured === true })
         setGatewayRuntime(gatewayReady ? 'ready' : 'failed')
         setBackend({
           label,
@@ -578,7 +600,13 @@ export default function App() {
     if (event.type === 'voice.deactivated') {
       setVoiceEnabled(false)
       setWaitingForVoice(false)
-      setActivity(t('{holder}正在使用语音', { holder: frontendLabel(event.holder) }))
+      if (event.reason === 'idle_timeout' && !desktopOrbMode) {
+        setConnectionEnabled(false)
+        setVideoCallOpen(false)
+        setActivity(t('空闲超时，连接已关闭'))
+      } else {
+        setActivity(t('{holder}正在使用语音', { holder: frontendLabel(event.holder) }))
+      }
     }
     if (
       event.type === 'voice.ownership'
@@ -848,7 +876,8 @@ export default function App() {
   )
   const voice = useRealtimeVoice({
     sessionId,
-    enabled: voiceEnabled || voiceEnabledForWakeWord,
+    connectionEnabled,
+    enabled: connectionEnabled && (voiceEnabled || voiceEnabledForWakeWord),
     suspended: desktopOrbMode && desktopLifecycle === 'hidden' && !wakeWordEnabled,
     outputMuted: false,
     // WebUI and desktop share one control contract: the toggle only changes
@@ -895,7 +924,7 @@ export default function App() {
     desktopOrbMode && desktopLifecycle !== 'active'
   )
   const voiceConnectionError = (
-    !lifecycleTransition && voice.connectionState === 'unavailable'
+    connectionEnabled && !lifecycleTransition && voice.connectionState === 'unavailable'
   )
   const desktopRuntime = resolveDesktopRuntime({
     gateway: gatewayRuntime,
@@ -1121,6 +1150,7 @@ export default function App() {
   }
 
   const enableVoice = () => {
+    if (!connectionEnabled) return
     if (!voice.activateAudio()) return
     if (voice.ownership.state === 'busy') {
       setWaitingForVoice(true)
@@ -1140,7 +1170,26 @@ export default function App() {
     setActivity(t('待命'))
   }
 
+  const toggleConnection = () => {
+    if (connectionEnabled) {
+      setVoiceEnabled(false)
+      setWaitingForVoice(false)
+      setVideoCallOpen(false)
+      setConnectionEnabled(false)
+      setActivity(t('连接已关闭'))
+    } else {
+      setConnectionEnabled(true)
+      setActivity(t('正在接入语音'))
+    }
+  }
+
+  const updateWebPreferences = update => {
+    if (update.surface === 'orb') setVideoCallOpen(false)
+    setWebPreferences(current => normalizeWebPreferences({ ...current, ...update }))
+  }
+
   const sendComposerInput = parts => {
+    if (!connectionEnabled) return false
     // Sending is a browser user gesture, so it is also the earliest reliable
     // point to unlock audio playback while the microphone remains muted.
     voice.activateAudio()
@@ -1186,12 +1235,31 @@ export default function App() {
   }
 
   const handleVoiceOrbClick = () => {
+    if (!connectionEnabled) {
+      if (!desktopOrbMode && !voice.activateAudio()) return
+      setConnectionEnabled(true)
+      if (!desktopOrbMode) setVoiceEnabled(true)
+      setActivity(t('正在接入语音'))
+      return
+    }
     if (voice.state === 'speaking') {
       voice.interrupt()
       return
     }
-    enableVoice()
+    if (!desktopOrbMode && (voiceEnabled || waitingForVoice)) disableVoice()
+    else enableVoice()
   }
+
+  const webIndicator = webConnectionIndicator({
+    enabled: connectionEnabled, connectionState: voice.connectionState,
+    error: voice.error || voice.visualError || voiceConnectionError,
+  })
+  const webStatusText = webIndicator === 'error' ? voice.error || t('连接异常')
+    : webIndicator === 'connected' ? t('对话中')
+    : connectionEnabled ? t('正在连接语音前台') : t('已断开')
+  const webOrbAction = !connectionEnabled ? t('点击开始语音对话')
+    : voice.state === 'speaking' ? t('点击打断回复')
+    : voiceEnabled ? t('点击暂停收音') : t('点击开启麦克风')
 
   if (desktopOrbMode && desktopSurfaceMode === 'orb') {
     return <main className={`desktop-gallery-shell${
@@ -1402,8 +1470,9 @@ export default function App() {
   </article>
 
   return <main className={`app${
-    desktopOrbMode ? ' desktop-conversation-panel' : ''
+    desktopOrbMode ? ' desktop-conversation-panel' : ` web-app${webPreferences.surface === 'orb' ? ' web-orb-mode' : ''}`
   }`}>
+    {desktopOrbMode ? <>
     <header>
       <div className="brand"><span>V</span><div>qwen-audio-agent<small>REALTIME VOICE · LIVE</small></div></div>
       <a
@@ -1426,21 +1495,10 @@ export default function App() {
           : <small>{t('模型能力信息不可用')}</small>}
       </div>
       <div className="status">
-        <i className={orbVisualState} /><span>{labelFor(orbVisualState)}</span>
+        <i className={connectionEnabled ? orbVisualState : ''} /><span>{connectionEnabled ? labelFor(orbVisualState) : t('已断开')}</span>
       </div>
-      {/* 资料库入口只在 web 模式给：桌面悬浮球的 header 已经紧到把「新会话」
-          压成一个「＋」，再塞一个文字按钮会挤掉语音按钮 */}
-      {!desktopOrbMode && (
-        <button
-          className={`ghost${showKnowledgeLibrary ? ' active' : ''}`}
-          onClick={() => setShowKnowledgeLibrary(value => !value)}
-          title={t('把本机的手册、规章、教材交给助手')}
-        >
-          {t('资料库')}
-        </button>
-      )}
       <button
-        className={`ghost${desktopOrbMode ? ' desktop-new-session' : ''}`}
+        className={`ghost${desktopOrbMode ? ' desktop-new-session' : ' web-ui-control'}`}
         onClick={resetSession}
         aria-label={t('新会话')}
         title={desktopOrbMode ? t('新会话') : undefined}
@@ -1451,6 +1509,7 @@ export default function App() {
           voiceEnabled ? 'active' : '',
           waitingForVoice ? 'waiting' : '',
         ].filter(Boolean).join(' ')}
+        disabled={!connectionEnabled}
         aria-label={voiceControlLabel}
         title={compactVoiceControl ? voiceControlLabel : undefined}
         onClick={() => {
@@ -1467,6 +1526,7 @@ export default function App() {
       </button>
       {videoCallSupported && <button
         className={`video-toggle${videoCallOpen ? ' active' : ''}`}
+        disabled={!connectionEnabled}
         aria-pressed={videoCallOpen}
         onClick={() => {
           if (!videoCallOpen) voice.activateAudio()
@@ -1481,23 +1541,40 @@ export default function App() {
         <OrbControlIcon type="collapse" />
       </button>}
     </header>
+    </> : <header className="web-minimal-header">
+      <div className={`web-connection-indicator ${webIndicator}`} role="status"
+        aria-label={webStatusText} title={webStatusText}>
+        <span aria-hidden="true" />
+      </div>
+      <button type="button" className="web-settings-trigger" aria-label={t('设置')}
+        title={t('设置')} aria-haspopup="dialog" aria-expanded={webSettingsOpen}
+        onClick={() => setWebSettingsOpen(true)}><OrbControlIcon type="settings" /></button>
+    </header>}
 
-    <section className="workspace">
+
+    <section className={`workspace${!desktopOrbMode ? ` web-voice-workspace${turns.length ? ' has-conversation' : ' is-empty'}` : ''}`}>
       {showKnowledgeLibrary && <KnowledgeLibraryPanel
         onClose={() => setShowKnowledgeLibrary(false)}
         getTask={voice.getTask}
       />}
       <div className="hero">
         <button
-          className={`orb ${orbVisualState}`}
+          className={desktopOrbMode ? `orb ${orbVisualState}` : 'web-hero-orb'}
           onClick={handleVoiceOrbClick}
-          aria-label={t('语音交互')}
+          aria-label={desktopOrbMode ? t('语音交互') : webOrbAction}
+          title={desktopOrbMode ? undefined : webOrbAction}
+          style={desktopOrbMode ? undefined : { '--web-hero-size': `${Math.round(webPreferences.size * 2.5)}px` }}
         >
-          <span />
+          {desktopOrbMode ? <span /> : <WebOrbVisual
+            skin={webPreferences.skin} size={Math.round(webPreferences.size * 2.5)} motion={webPreferences.motion}
+            state={connectionEnabled ? orbVisualState : 'idle'} enabled={voiceEnabled}
+          />}
         </button>
-        <p>VOICE FRONTEND</p>
-        <h1>{t('你说，我来调度。')}</h1>
-        <small>{voice.error || activity}</small>
+        {desktopOrbMode && <>
+          <p>VOICE FRONTEND</p>
+          <h1>{t('你说，我来调度。')}</h1>
+          <small>{!connectionEnabled ? t('连接已关闭，点击“开始对话”继续') : voice.error || activity}</small>
+        </>}
       </div>
 
       <div
@@ -1512,7 +1589,7 @@ export default function App() {
           )
         }}
       >
-        {!turns.length && <div className="empty">
+        {desktopOrbMode && !turns.length && <div className="empty">
           <b>{t('试着说')}</b>
           <span>{t('“帮我查一下今天的 AI 新闻，并整理成三点摘要。”')}</span>
         </div>}
@@ -1539,8 +1616,39 @@ export default function App() {
       {composerEnabled && <MultimodalComposer
         onSend={sendComposerInput}
         compact={desktopOrbMode}
+        disabled={!connectionEnabled}
+        visible={desktopOrbMode || webPreferences.surface === 'panel'}
       />}
 
     </section>
+    {!desktopOrbMode && webPreferences.surface === 'orb' && <>
+      <WebVoiceOrb
+        skin={webPreferences.skin} size={webPreferences.size} motion={webPreferences.motion}
+        state={!connectionEnabled ? 'idle' : voiceConnectionError ? 'error' : orbVisualState}
+        status={!connectionEnabled ? t('已断开') : voice.error || labelFor(orbVisualState)}
+        connected={connectionEnabled} microphoneEnabled={voiceEnabled}
+        onActivate={handleVoiceOrbClick}
+        onToggleMicrophone={() => { if (voiceEnabled || waitingForVoice) disableVoice(); else enableVoice() }}
+        onToggleConnection={toggleConnection}
+        onOpenConversation={() => updateWebPreferences({ surface: 'panel' })}
+        onOpenSettings={() => setWebSettingsOpen(true)}
+      />
+    </>}
+    {!desktopOrbMode && webShareOpen && <WebShareDialog onClose={() => setWebShareOpen(false)} />}
+    {!desktopOrbMode && webSettingsOpen && <WebPreferences
+      preferences={webPreferences} onChange={updateWebPreferences}
+      onClose={() => setWebSettingsOpen(false)} modelLabel={modelLabel}
+      modelInputModes={modelStatus.modelInputModes} backendEnabled={backend.enabled === true}
+      knowledgeConfigured={webCapabilities.knowledge}
+      connected={connectionEnabled} microphoneEnabled={voiceEnabled}
+      microphoneLabel={voiceControlLabel} statusText={webStatusText}
+      onToggleConnection={toggleConnection}
+      onToggleMicrophone={() => { if (voiceEnabled || waitingForVoice) disableVoice(); else enableVoice() }}
+      onShare={() => setWebShareOpen(true)}
+      videoSupported={videoCallSupported} videoOpen={videoCallOpen}
+      onToggleVideo={() => { if (!videoCallOpen) voice.activateAudio(); setVideoCallOpen(value => !value) }}
+      onOpenLibrary={() => { updateWebPreferences({ surface: 'panel' }); setShowKnowledgeLibrary(true) }}
+      onNewSession={resetSession}
+    />}
   </main>
 }

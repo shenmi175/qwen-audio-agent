@@ -6,6 +6,7 @@ import { describeActiveRealtime } from '../voice/realtime-provider.mjs'
 import { PERMISSION_DECISIONS } from '../core/work-authorization.mjs'
 import { enforceSameOrigin, isAllowedOrigin } from '../core/request-security.mjs'
 import { gatewayBrowserPairingPage } from '../access/browser-pairing-page.mjs'
+import { registerBrowserSharing } from '../access/browser-sharing.mjs'
 import {
   GATEWAY_CAPABILITIES,
   GATEWAY_PROTOCOL_VERSION,
@@ -157,6 +158,10 @@ export function registerGatewayHttpRoutes(app, {
       }
     })
     next()
+  })
+
+  registerBrowserSharing(app, {
+    config, access: gatewayAccessRuntime, publicEndpoint: publicEndpointRuntime, getGateway,
   })
 
   app.post('/api/access/pairing-tickets', (req, res) => {

@@ -300,6 +300,8 @@ export const config = {
     runtimeEnvironment.stateDirectory,
     'gateway-devices.json',
   ),
+  gatewayShareOrigin: String(process.env.QWEN_AUDIO_GATEWAY_SHARE_ORIGIN || '').trim(),
+  gatewayShareSetupOrigin: String(process.env.QWEN_AUDIO_GATEWAY_SHARE_SETUP_ORIGIN || '').trim(),
   agentProtocol: requestedAgentProtocol,
   backendOwnership,
   backendPermissionMode,
@@ -634,6 +636,13 @@ export const config = {
   // The sleep timeout mirrors the desktop auto-hide timeout: the orb hides
   // and the gateway enters sleep mode at the same threshold. The legacy
   // QWEN_AUDIO_SLEEP_TIMEOUT_SECONDS is ignored to avoid divergence.
+  // Separate from desktop sleep: close the provider after an idle conversation.
+  // Disabled by default so existing installations keep their connection policy.
+  realtimeIdleTimeoutMs: numberSetting(
+    process.env.QWEN_AUDIO_REALTIME_IDLE_TIMEOUT_SECONDS,
+    0,
+    { min: 0, max: 86_400 },
+  ) * 1000,
   sleepTimeoutMs: numberSetting(
     process.env.QWEN_AUDIO_DESKTOP_AUTO_HIDE_SECONDS,
     0,

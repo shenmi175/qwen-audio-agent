@@ -14,6 +14,56 @@ import { GatewayEventRouter } from '../src/client/client-event-router.mjs'
 import { desktopClientTools } from '../../web/src/desktop/client-tools.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
+
+test('idle timeout closes the provider, disables capture and output, and prevents reconnect', async t => {
+  const h = harness(t, { config: {
+    sleepTimeoutMs: 0, realtimeIdleTimeoutMs: 30,
+    announcementQuietMs: 0, announcementBatchMs: 0,
+    taskNotificationClaimTtlMs: 60_000,
+  } })
+  const frontend = await h.connect({ inputEnabled: false, outputEnabled: true })
+  await until(() => h.events.some(event => event.type === 'voice.deactivated' && event.reason === 'idle_timeout'))
+  assert.equal(frontend.ready, false)
+  assert.equal(h.runtime.inputState().inputEnabled, false)
+  assert.equal(h.runtime.inputState().inputActive, false)
+  assert(h.logs.some(event => event.event === 'realtime.idle_disconnect'))
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(h.frontends.length, 1)
+})
+
+test('idle timeout does not keep a completed response alive forever when browser playback never starts', async t => {
+  const h = harness(t, { config: {
+    sleepTimeoutMs: 0, realtimeIdleTimeoutMs: 30,
+    announcementQuietMs: 0, announcementBatchMs: 0,
+    taskNotificationClaimTtlMs: 60_000,
+  } })
+  const frontend = await h.connect()
+  frontend.emit({ type: 'response.created', response: { id: 'not-played' } })
+  frontend.emit({ type: 'response.audio.delta', response_id: 'not-played', delta: 'AAAA' })
+  frontend.emit({ type: 'response.audio_transcript.done', response_id: 'not-played', transcript: 'Hello' })
+  frontend.emit({ type: 'response.done', response: { id: 'not-played', status: 'completed' } })
+  await until(() => h.events.some(event => event.type === 'voice.deactivated' && event.reason === 'idle_timeout'))
+  assert.equal(frontend.ready, false)
+})
+
+test('idle timeout protects acknowledged playback until its ending receipt', async t => {
+  const h = harness(t, { config: {
+    sleepTimeoutMs: 0, realtimeIdleTimeoutMs: 30,
+    announcementQuietMs: 0, announcementBatchMs: 0,
+    taskNotificationClaimTtlMs: 60_000,
+  } })
+  const frontend = await h.connect()
+  frontend.emit({ type: 'response.created', response: { id: 'playing' } })
+  frontend.emit({ type: 'response.audio.delta', response_id: 'playing', delta: 'AAAA' })
+  frontend.emit({ type: 'response.audio_transcript.done', response_id: 'playing', transcript: 'Hello' })
+  h.send({ type: Input.PLAYBACK_STARTED, responseId: 'playing' })
+  frontend.emit({ type: 'response.done', response: { id: 'playing', status: 'completed' } })
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(frontend.ready, true)
+  h.send({ type: Input.PLAYBACK_ENDED, responseId: 'playing' })
+  await until(() => h.events.some(event => event.type === 'voice.deactivated' && event.reason === 'idle_timeout'))
+  assert.equal(frontend.ready, false)
+})
 async function until(predicate) {
   const deadline = Date.now() + 2000
   while (!predicate()) {
