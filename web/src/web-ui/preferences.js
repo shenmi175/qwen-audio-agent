@@ -3,12 +3,14 @@ import { normalizeOrbSkinId } from '../../../shared/orb-skin-catalog.mjs'
 export const WEB_UI_PREFERENCES_KEY = 'qwaudio.web-ui.preferences'
 
 export function normalizeWebPreferences(value = {}) {
+  const realtimeModel = typeof value.realtimeModel === 'string' ? value.realtimeModel : ''
   return {
     skin: normalizeOrbSkinId(value.skin) || 'cloud',
     size: Math.min(160, Math.max(88, Number(value.size) || 112)),
     surface: value.surface === 'orb' ? 'orb' : 'panel',
     motion: ['on', 'off'].includes(value.motion) ? value.motion : 'system',
     appearanceVersion: 2,
+    realtimeModel: /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(realtimeModel) ? realtimeModel : '',
   }
 }
 

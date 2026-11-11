@@ -52,3 +52,6 @@ docs/.vitepress/.site/
 *.private.json
 *.private.jsonl
 *.egg-info/
+
+# Browser traces can include request payloads and screenshots.
+/output/playwright/

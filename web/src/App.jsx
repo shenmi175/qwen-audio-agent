@@ -246,6 +246,8 @@ export default function App() {
   const [activity, setActivity] = useState(t('正在检查后台 Agent'))
   const [frontend, setFrontend] = useState({ label: 'Realtime Agent' })
   const [modelStatus, setModelStatus] = useState(() => realtimeModelStatus())
+  const confirmedModel = useRef('')
+  const [modelSettings, setModelSettings] = useState({ catalog: [], defaultModel: '', activeModel: '' })
   const videoCallSupported = !compactVoiceControl
     && modelStatus.modelInputModes.includes('video')
     && modelStatus.transportInputModes.includes('video')
@@ -466,7 +468,8 @@ export default function App() {
         setFrontend({
           label: payload.realtimeLabel || payload.realtimeProvider || 'Realtime Agent',
         })
-        setModelStatus(realtimeModelStatus(payload))
+        if (!confirmedModel.current) setModelStatus(realtimeModelStatus(payload))
+        setModelSettings(previous => ({ ...previous, catalog: payload.realtimeModelCatalog || [], defaultModel: payload.realtimeModel || '', provider: payload.realtimeProvider }))
         setWebCapabilities({ knowledge: payload.frontendKnowledge?.configured === true,
           memory: payload.frontendMemory, memoryLearning: payload.memoryLearning,
           realtimeIdleTimeoutMs: payload.realtimeIdleTimeoutMs })
@@ -536,6 +539,12 @@ export default function App() {
   }, [])
 
   const onRealtimeEvent = useCallback(event => {
+    if (event.type === 'voice.ready' && event.realtimeModel) {
+      confirmedModel.current = event.realtimeModel
+      setModelStatus(realtimeModelStatus(event))
+      setModelSettings(previous => ({ ...previous, activeModel: event.realtimeModel }))
+    }
+
     const animationEvent = spriteAnimationEventForGatewayEvent(event)
     if (animationEvent) {
       triggerSpriteAnimation(animationEvent)
@@ -878,6 +887,7 @@ export default function App() {
   )
   const voice = useRealtimeVoice({
     sessionId,
+    model: webPreferences.realtimeModel,
     connectionEnabled,
     enabled: connectionEnabled && (voiceEnabled || voiceEnabledForWakeWord),
     suspended: desktopOrbMode && desktopLifecycle === 'hidden' && !wakeWordEnabled,
@@ -1640,6 +1650,7 @@ export default function App() {
     {!desktopOrbMode && webSettingsOpen && <WebPreferences
       preferences={webPreferences} onChange={updateWebPreferences}
       onClose={() => setWebSettingsOpen(false)} modelLabel={modelLabel}
+      modelSettings={modelSettings} onSelectModel={model => { setVideoCallOpen(false); updateWebPreferences({ realtimeModel: model }) }}
       modelInputModes={modelStatus.modelInputModes} backendEnabled={backend.enabled === true}
       knowledgeConfigured={webCapabilities.knowledge}
       memoryStatus={webCapabilities.memory} memoryLearning={webCapabilities.memoryLearning}

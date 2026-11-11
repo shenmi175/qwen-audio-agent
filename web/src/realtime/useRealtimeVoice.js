@@ -206,6 +206,7 @@ export function releasesManualInputGuard(event, turnId = '') {
 export default function useRealtimeVoice({
   sessionId,
   connectionEnabled = true,
+  model = '',
   enabled,
   suspended = false,
   outputMuted = false,
@@ -750,6 +751,7 @@ export default function useRealtimeVoice({
           outputEnabled: mode.outputEnabled,
           textOnly: mode.textOnly,
           wakeWordOnly: wakeWordOnlyRef.current,
+          ...(model ? { model } : {}),
           clientType,
           clientLabel,
           inputCapabilities: clientInputCapabilities(clientType),
@@ -851,6 +853,7 @@ export default function useRealtimeVoice({
     clientLabel,
     connectionEnabled,
     connectionAttempt,
+    model,
     clientStatesSignature,
     clientType,
     environmentState,

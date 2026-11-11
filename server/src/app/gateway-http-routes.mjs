@@ -7,6 +7,7 @@ import { PERMISSION_DECISIONS } from '../core/work-authorization.mjs'
 import { enforceSameOrigin, isAllowedOrigin } from '../core/request-security.mjs'
 import { gatewayBrowserPairingPage } from '../access/browser-pairing-page.mjs'
 import { registerBrowserSharing } from '../access/browser-sharing.mjs'
+import { diagnosticsPublicStatus } from '../../../components/diagnostics/lifecycle.mjs'
 import { graphitiComponentStatus } from '../../../components/graphiti/lifecycle.mjs'
 import {
   GATEWAY_CAPABILITIES,
@@ -243,6 +244,10 @@ export function registerGatewayHttpRoutes(app, {
 
   app.get('/livez', (req, res) => {
     res.json({ ok: true, status: 'live' })
+  })
+
+  app.get('/api/diagnostics/status', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(diagnosticsPublicStatus())
   })
 
   app.get('/api/components/graphiti', async (_req, res) => {

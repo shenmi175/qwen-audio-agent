@@ -17,3 +17,22 @@ export function diagnosticsConfigurationFingerprint() {
     env.OTEL_EXPORTER_OTLP_TRACES_HEADERS || '',
   ])).digest('hex')
 }
+
+// Public metadata only. Exporter endpoints and authentication stay server-side.
+export function diagnosticsPublicStatus(env = { ...process.env, ...diagnosticsEnvironment() }) {
+  let url = null
+  try {
+    const parsed = new URL(env.QWEN_AUDIO_DIAGNOSTICS_UI_URL)
+    if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) {
+      parsed.search = ''
+      parsed.hash = ''
+      url = parsed.href
+    }
+  } catch {}
+  return {
+    enabled: env.QWEN_AUDIO_DIAGNOSTICS_PROVIDER === 'otlp',
+    label: String(env.QWEN_AUDIO_DIAGNOSTICS_LABEL || 'OTLP').slice(0, 80),
+    url,
+    coverage: { backgroundMemory: true, realtime: false, conversationSearch: false },
+  }
+}

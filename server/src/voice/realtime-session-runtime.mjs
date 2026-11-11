@@ -140,6 +140,7 @@ export function createRealtimeSessionRuntime({
   let clientContext = normalizeClientContext()
   let sessionAssistantProfile = ''
   let sessionOutputVoice = ''
+  let sessionModel = ''
   const turns = new RealtimeTurnState()
   const transcripts = new TurnTranscripts()
   const turnCitations = new TurnCitations()
@@ -233,6 +234,7 @@ export function createRealtimeSessionRuntime({
     defaultProvider: defaultRealtimeProvider,
     getAgentContext,
     getSessionOptions: () => ({
+      ...(sessionModel ? { model: sessionModel } : {}),
       ...(sessionOutputVoice ? { voice: sessionOutputVoice } : {}),
     }),
     shouldReconnect: () => inputEnabled || outputEnabled,
@@ -267,6 +269,9 @@ export function createRealtimeSessionRuntime({
         inputSampleRate: createdFrontend.provider.inputSampleRate,
         provider: createdFrontend.provider.key,
         providerLabel: createdFrontend.provider.label,
+        realtimeModel: createdFrontend.provider.model?.() || null,
+        realtimeModelProfile: createdFrontend.provider.modelProfile?.() || null,
+        realtimeModelCatalog: createdFrontend.provider.modelCatalog?.() || [],
       })
       sleepController.recordActivity()
       progressAnnouncements.flush()
@@ -957,6 +962,7 @@ export function createRealtimeSessionRuntime({
         clientType: descriptor.type,
         clientLabel: descriptor.label,
         requestedProvider: event.provider || realtimeSession.providerKey,
+        requestedModel: event.model || null,
         inputEnabled: event.inputEnabled === true,
         outputEnabled: event.outputEnabled === true,
         textOnly: event.textOnly === true,
@@ -966,6 +972,22 @@ export function createRealtimeSessionRuntime({
       playbackReceipts = !capabilitiesNegotiated
         || negotiatedCapabilities.includes(GatewayClientCapability.PLAYBACK_RECEIPTS)
       sessionOutputVoice = String(event.outputVoice || '').trim()
+      const requestedModel = String(event.model || '').trim()
+      try {
+        const selectedProvider = realtimeProviderRegistry.resolve(event.provider || realtimeSession.providerKey)
+        if (requestedModel && requestedModel !== selectedProvider.model?.()) {
+          if (typeof selectedProvider.withModel !== 'function') throw new Error('当前 Provider 不支持会话级模型选择')
+          selectedProvider.withModel(requestedModel)
+        }
+      } catch (error) {
+        emit({ type: 'error', message: error.message })
+        return
+      }
+      if (requestedModel !== sessionModel) {
+        realtimeSession.detach({ clearAudio: true })
+        sessionModel = requestedModel
+      }
+
       // The client may pick a realtime front end per session. An unknown
       // name is reported instead of silently falling back, so a typo does
       // not look like a working session on the wrong provider.

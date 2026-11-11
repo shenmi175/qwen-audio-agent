@@ -1285,8 +1285,12 @@ export function createRealtimeFrontend(options = {}) {
     providerRegistry = defaultRealtimeProviderRegistry,
     ...rest
   } = options
-  return new RealtimeFrontend({
-    ...rest,
-    provider: provider || providerRegistry.resolve(providerName),
-  })
+  let selected = provider || providerRegistry.resolve(providerName)
+  const model = String(rest.sessionOptions?.model || '').trim()
+  if (model && model !== selected.model?.()) {
+    if (typeof selected.withModel !== 'function')
+      throw new RealtimeConfigurationError('当前 Provider 不支持会话级模型选择')
+    selected = selected.withModel(model)
+  }
+  return new RealtimeFrontend({ ...rest, provider: selected })
 }

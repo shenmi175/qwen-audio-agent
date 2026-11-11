@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { listDashScopeRealtimeModelProfiles } from '../../shared/realtime-provider-catalog.mjs'
 import { chromium } from 'playwright'
 import { build } from 'vite'
 import { startDesktopRendererServer } from '../../desktop/src/renderer-server.mjs'
@@ -23,7 +24,10 @@ const MOCK_BROWSER_APIS = String.raw`
   const videoCall = location.search.includes('video-call')
   const photoCapture = location.search.includes('photo-capture')
   const realAudio = photoCapture || location.search.includes('browser-smoke=real-audio') || videoCall
+  const modelProfiles = ${JSON.stringify(listDashScopeRealtimeModelProfiles())}
+  const modelSettings = location.search.includes('model-settings')
   const state = {
+    handshakes: [],
     inputMessages: [],
     mediaRequests: 0,
     cameraRequests: 0,
@@ -119,8 +123,13 @@ const MOCK_BROWSER_APIS = String.raw`
           throw new Error('controlled input send failure')
         }
         state.inputMessages.push(message)
+        if (modelSettings) setTimeout(() => serverEvent(this, {
+          type: 'transcript.final', role: 'user', turnId: 'settings-test-turn',
+          content: message.parts.filter(part => part.type === 'text').map(part => part.text).join(''),
+        }), 0)
       }
       if (message.type === 'session.hello') {
+        state.handshakes.push({ ...message, socketUrl: this.url })
         if (message.protocol?.min !== protocolVersion || message.protocol?.max !== protocolVersion) {
           throw new Error('Browser smoke received an unexpected Gateway protocol version')
         }
@@ -141,6 +150,10 @@ const MOCK_BROWSER_APIS = String.raw`
           type: 'voice.ready',
           inputSampleRate: 16_000,
           provider: 'browser-smoke',
+          ...(modelSettings ? (() => {
+            const profile = modelProfiles.find(item => item.id === (message.connection?.model || 'qwen-audio-3.1-realtime-plus'))
+            return { realtimeModel: profile.id, realtimeModelProfile: profile, realtimeModelCatalog: modelProfiles }
+          })() : {}),
         }), 0)
       }
       if (message.type === 'audio.append') {
@@ -376,6 +389,7 @@ const MOCK_BROWSER_APIS = String.raw`
   }
   window.browserSmoke = {
     inputMessages: () => [...state.inputMessages],
+    handshakes: () => [...state.handshakes],
     sleepTool() {
       document.documentElement.dataset.actionResult = ''
       serverEvent(state.activeSocket, { type: 'client.action.request',
@@ -453,6 +467,7 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
     type: `console:${message.type()}`,
     message: message.text(),
   }))
+  const settingsProfiles = path.includes('model-settings') ? listDashScopeRealtimeModelProfiles() : null
   const videoProfile = path.includes('video-call') ? {
     id: 'test-omni', label: 'Test Omni', family: 'omni',
     modelCapabilities: { textInput: true, audioInput: true, imageInput: true, videoInput: true },
@@ -465,11 +480,22 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
       ok: true,
       realtimeProvider: 'browser-smoke',
       realtimeLabel: 'Browser Smoke',
+      ...(settingsProfiles ? { realtimeModel: 'qwen-audio-3.1-realtime-plus',
+        realtimeModelProfile: settingsProfiles.find(item => item.id === 'qwen-audio-3.1-realtime-plus'),
+        realtimeModelCatalog: settingsProfiles } : {}),
       ...(videoProfile ? { realtimeModel: videoProfile.id, realtimeModelProfile: videoProfile,
         realtimeModelCatalog: [videoProfile] } : {}),
       backend: { enabled: false, status: 'not_configured' },
     }),
   }))
+  if (settingsProfiles) {
+    const data = {
+      '/api/components/graphiti': { ready: true, diagnostics: { enabled: true }, agentModel: 'background-agent', graphModel: 'background-extraction' },
+      '/api/memory/status': { runtime: { pending_tasks: 0 } },
+      '/api/diagnostics/status': { enabled: true, label: 'Langfuse', url: 'https://diagnostics.example.test/' },
+    }
+    for (const [path, body] of Object.entries(data)) await page.route('**' + path, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }))
+  }
   await page.addInitScript({ content: MOCK_BROWSER_APIS })
   await page.goto(new URL(path, pageBaseUrl).href, { waitUntil: 'domcontentloaded' })
   if (process.env.QWEN_BROWSER_SMOKE_INJECT_ERROR === '1') {
@@ -1011,6 +1037,55 @@ async function testPhotoCapture(context, diagnostics) {
 }
 
 let server
+async function testModelSettings(context, diagnostics) {
+  const page = await preparePage(context, '?browser-smoke=model-settings', diagnostics)
+  await page.evaluate(() => localStorage.removeItem('qwaudio.web-ui.preferences'))
+  await page.reload()
+  const composer = page.locator('.multimodal-composer')
+  await composer.locator('textarea').fill('模型切换会话保留测试')
+  await composer.getByRole('button', { name: '发送', exact: true }).click()
+  await page.locator('.messages .user').getByText('模型切换会话保留测试', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '设置', exact: true })
+  const selector = dialog.getByLabel('选择模型', { exact: true })
+  await selector.waitFor()
+  assert.equal(await selector.locator('option').count(), listDashScopeRealtimeModelProfiles().length + 1)
+  await selector.selectOption('qwen-audio-3.1-realtime-flash')
+  await dialog.getByRole('button', { name: '应用模型', exact: true }).click()
+  await page.waitForFunction(() => browserSmoke.handshakes().some(item => item.connection?.model === 'qwen-audio-3.1-realtime-flash'))
+  await dialog.getByText('当前生效 · qwen-audio-3.1-realtime-flash', { exact: true }).waitFor()
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('qwaudio.web-ui.preferences')).realtimeModel), 'qwen-audio-3.1-realtime-flash')
+  const before = await page.evaluate(() => browserSmoke.handshakes().at(-1).socketUrl)
+  await selector.selectOption('qwen-audio-3.0-realtime-plus')
+  await dialog.getByRole('button', { name: '应用模型', exact: true }).click()
+  await dialog.getByText('当前生效 · qwen-audio-3.0-realtime-plus', { exact: true }).waitFor()
+  assert.equal(await page.evaluate(() => browserSmoke.handshakes().at(-1).socketUrl), before)
+  assert.equal(await page.locator('.messages .user').getByText('模型切换会话保留测试', { exact: true }).count(), 1)
+  await mkdir(resolve(projectRoot, 'runtime/settings-verification'), { recursive: true })
+  await page.screenshot({ path: resolve(projectRoot, 'runtime/settings-verification/desktop.png') })
+  await dialog.getByRole('button', { name: '记忆与诊断', exact: true }).click()
+  await dialog.getByRole('link', { name: /打开诊断控制台/ }).waitFor()
+  assert.equal(await dialog.getByRole('link', { name: /打开诊断控制台/ }).getAttribute('href'), 'https://diagnostics.example.test/')
+  assert.equal(await dialog.getByText('尚未接入', { exact: true }).count(), 2)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.screenshot({ path: resolve(projectRoot, 'runtime/settings-verification/mobile.png') })
+  assert.ok(await dialog.evaluate(el => el.getBoundingClientRect().width < innerWidth))
+  assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true)
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'detached' })
+  await page.reload()
+  await page.waitForFunction(() => browserSmoke.handshakes().at(-1)?.connection?.model === 'qwen-audio-3.0-realtime-plus')
+  const other = await context.browser().newContext({ locale: 'zh-CN' })
+  try {
+    const independent = await preparePage(other, '?browser-smoke=model-settings', diagnostics)
+    await independent.waitForFunction(() => browserSmoke.handshakes().length > 0)
+    assert.equal(await independent.evaluate(() => browserSmoke.handshakes()[0].connection?.model), undefined)
+    await finishPage(independent, diagnostics)
+  } finally { await other.close() }
+  await page.evaluate(() => localStorage.removeItem('qwaudio.web-ui.preferences'))
+  await finishPage(page, diagnostics)
+}
+
 let browser
 let context
 let tracingActive = false
@@ -1020,13 +1095,15 @@ try {
   await build({ root: webRoot, logLevel: 'warn' })
   server = startVite()
   await waitForServer(server.vite, server.getOutput)
-  browser = await chromium.launch({ headless: true, args: [
+  browser = await chromium.launch({ headless: true, ...(process.env.QWEN_BROWSER_SMOKE_EXECUTABLE_PATH ? { executablePath: process.env.QWEN_BROWSER_SMOKE_EXECUTABLE_PATH } : {}), args: [
     '--use-fake-device-for-media-stream',
     '--use-fake-ui-for-media-stream',
   ] })
   context = await browser.newContext({ locale: 'zh-CN' })
   await context.tracing.start({ screenshots: true, snapshots: true, sources: true })
   tracingActive = true
+  await testModelSettings(context, diagnostics)
+  if (!process.argv.includes('--settings-only')) {
   await testPhotoCapture(context, diagnostics)
   await testComposerIme(context, diagnostics)
   await testComposerSendFailure(context, diagnostics)
@@ -1042,11 +1119,12 @@ try {
   await testDesktopAutoSleep(context, diagnostics)
   await testVideoCall(context, diagnostics)
   await testCameraPermission(context, diagnostics)
+  }
   await context.tracing.stop()
   tracingActive = false
   await context.close()
   context = null
-  console.log('Browser WebUI smoke passed: one-shot photo capture, testComposerIme, testComposerSendFailure, composer attachment races, voice lifecycle, native AudioWorklet capture, desktop CSP, sleep/wake cycles, video-call entry, camera toggle, reconnect, responsive dock and permission recovery.')
+  console.log(process.argv.includes('--settings-only') ? 'Settings browser acceptance passed: model selection, active model confirmation, reload persistence, independent devices, diagnostics link and responsive layout.' : 'Browser WebUI smoke passed: one-shot photo capture, testComposerIme, testComposerSendFailure, composer attachment races, voice lifecycle, native AudioWorklet capture, desktop CSP, sleep/wake cycles, video-call entry, camera toggle, reconnect, responsive dock and permission recovery.')
 } catch (error) {
   await mkdir(diagnosticsDirectory, { recursive: true })
   const pages = context?.pages?.() || []
