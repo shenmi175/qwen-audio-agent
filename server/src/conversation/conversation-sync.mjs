@@ -63,6 +63,7 @@ export class ConversationSync {
     this.sessionTtlMs = sessionTtlMs
     this.sessions = new Map()
     this.sequence = 0
+    this.recordListeners = new Set()
     this.onRecord = onRecord
   }
 
@@ -70,6 +71,15 @@ export class ConversationSync {
     Object.assign(this, options)
   }
 
+  subscribeRecords(listener) {
+    this.recordListeners.add(listener)
+    return () => this.recordListeners.delete(listener)
+  }
+  notifyRecords(message, context) {
+    for (const listener of this.recordListeners) {
+      try { listener(message, context) } catch { /* Recording cannot break conversation. */ }
+    }
+  }
   setRecordObserver(observer) {
     this.onRecord = typeof observer === 'function' ? observer : null
     return this
@@ -158,7 +168,8 @@ export class ConversationSync {
       const snapshot = { ...existing }
       if (notify) {
         if (changed) this.#recordPending(state, snapshot)
-        try { this.onRecord?.(snapshot, { ownerId, sessionId }) } catch { /* observers must not affect sync */ }
+        this.notifyRecords(snapshot, { ownerId, sessionId })
+      try { this.onRecord?.(snapshot, { ownerId, sessionId }) } catch { /* observers must not affect sync */ }
       }
       return snapshot
     }
@@ -194,6 +205,7 @@ export class ConversationSync {
     const snapshot = { ...message }
     if (notify) {
       this.#recordPending(state, snapshot)
+      this.notifyRecords(snapshot, { ownerId, sessionId })
       try { this.onRecord?.(snapshot, { ownerId, sessionId }) } catch { /* observers must not affect sync */ }
     }
     return snapshot

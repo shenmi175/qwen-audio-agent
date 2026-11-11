@@ -118,6 +118,7 @@ export default function WebShareDialog({ onClose }) {
     </> : !error && <p role="status">{used ? t('链接已使用，对方已获得独立授权。') : t('链接已失效，请生成新二维码。')}</p>}
     <p className="web-settings-hint">{t('首次使用需按指引安装此电脑的局域网证书。HTTP 安装指引仅在可信局域网使用，语音对话通过 HTTPS 传输。')}</p>
     <p className="web-settings-hint">{t('链接 5 分钟有效且仅可使用一次。对方使用独立会话，模型费用由此电脑的账号承担；配对后的授权持续有效，可在下方撤销。')}</p>
+    {invitation?.sharedMemory && <p className="web-settings-hint">{t('此部署启用了共享长期记忆，所有获授权设备均可读取和修改同一份记忆。')}</p>}
     <button className="web-settings-primary" type="button" disabled={busy} onClick={regenerate}>{t('生成新二维码')}</button>
     {shares.length > 0 && <section><h3>{t('分享授权')}</h3>
       <ul className="web-share-list">{shares.map((share, index) => <li key={share.id}>

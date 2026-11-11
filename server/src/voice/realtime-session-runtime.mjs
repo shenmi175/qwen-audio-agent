@@ -144,6 +144,9 @@ export function createRealtimeSessionRuntime({
   const transcripts = new TurnTranscripts()
   const turnCitations = new TurnCitations()
   let realtimeSession
+  let turnMemory = []
+  let memoryReadVersion = 0
+  const graphitiMemory = memoryService?.describe?.().provider?.key === 'graphiti'
   let connectionIdle
   let visualInput
   const clearVisualInput = () => {
@@ -171,6 +174,7 @@ export function createRealtimeSessionRuntime({
   const getAgentContext = () => ({
     client: clientContext,
     frontend: {
+      backgroundMemory: graphitiMemory,
       ...(spawnThinkingDescription ? { spawnThinkingDescription } : {}),
       ...buildFrontendToolContext({
         disabledTools: config.frontendDisabledTools || [],
@@ -184,7 +188,7 @@ export function createRealtimeSessionRuntime({
       }),
       tools: frontendSourceToolDefinitions(sessionToolSources),
     },
-    memories: memoryService?.list(ownerId, { limit: 64 }) || [],
+    memories: [...(memoryService?.list(ownerId, { limit: 64 }) || []), ...turnMemory],
     recentMessages: frontendRecentMessages(),
     ...(sessionAssistantProfile
       ? { assistantProfile: sessionAssistantProfile }
@@ -399,12 +403,13 @@ export function createRealtimeSessionRuntime({
   // retain their existing cache-only path to avoid a redundant prompt update.
   const unsubscribeMemory = typeof memoryService?.subscribe === 'function'
     ? memoryService.subscribe(event => {
-        if (event.ownerId !== ownerId) return
+        if (!(memoryService.sharesOwner?.(event.ownerId, ownerId) ?? event.ownerId === ownerId)) return
         // Persistence changes invalidate the client view regardless of their
         // source or whether this session needs a model-instruction refresh.
         emit({ type: GatewayServerEvent.MEMORY_CHANGED })
+        if (!event.version || event.version > memoryReadVersion) turnMemory = []
         realtimeSession.updateAgentContext({
-          memories: memoryService.list(ownerId, { limit: 64 }),
+          memories: [...memoryService.list(ownerId, { limit: 64 }), ...turnMemory],
         }, {
           refreshSession: event.source !== 'realtime-tool' || event.sessionId !== sessionId,
         })
@@ -577,6 +582,7 @@ export function createRealtimeSessionRuntime({
     ensurePermissionResponseFor,
     reportFrontendError,
     onSpeechStarted: fields => {
+      turnMemory = []
       connectionLogger.info('realtime.provider.speech_started', fields)
       observeSessionAudio({ type: 'speech_started', ...fields })
     },

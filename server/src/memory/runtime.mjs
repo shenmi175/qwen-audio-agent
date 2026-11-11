@@ -47,6 +47,7 @@ function normalizeQueryResult(value) {
   return {
     memories: normalizeDocuments(value.memories || value.documents || []),
     context: clean(value.context, 8_000),
+    ...Object.fromEntries(['status','code','facts','trace_id','read_version','generation'].filter(k => k in value).map(k => [k,value[k]])),
   }
 }
 
@@ -56,17 +57,28 @@ export class FrontendMemoryRuntime {
     this.closePromise = null
     this.changeListeners = new Set()
     this.ownerWrites = new Map()
+    this.unsubscribeProvider = provider.subscribe?.(event => {
+      for (const listener of this.changeListeners) {
+        try { listener(event)?.catch?.(() => {}) } catch {}
+      }
+    })
   }
 
   describe() {
     return {
       configured: true,
+      ...(this.provider.sharedOwnerId ? { scope: 'shared' } : {}),
       provider: describeMemoryProvider(this.provider),
     }
   }
 
   capabilities() {
     return describeMemoryProvider(this.provider).capabilities
+  }
+
+  sharesOwner(left, right) {
+    const resolve = owner => this.provider.resolveOwnerId?.(owner) ?? owner
+    return resolve(left) === resolve(right)
   }
 
   ownsSessionObservation() {
@@ -98,7 +110,7 @@ export class FrontendMemoryRuntime {
   // synchronously, including its success observers, and never poison the next
   // write when a provider rejects. Other owners retain independent lanes.
   withOwnerWrite(ownerId, write) {
-    const key = String(ownerId || '')
+    const key = String(this.provider.resolveOwnerId?.(ownerId) ?? ownerId ?? '')
     const previous = this.ownerWrites.get(key)
     const pending = Promise.withResolvers()
     this.ownerWrites.set(key, pending.promise)
@@ -147,6 +159,7 @@ export class FrontendMemoryRuntime {
       )
     }
     const normalized = {
+      ...(result.task ? { task: result.task } : {}),
       changed: Math.max(0, Math.trunc(Number(result.changed) || 0)),
       documents: normalizeDocuments(result.documents),
     }
@@ -212,6 +225,7 @@ export class FrontendMemoryRuntime {
     }
     return {
       ...normalizeMemoryProviderHealth(health),
+      ...(this.provider.sharedOwnerId ? { scope: 'shared' } : {}),
       configured: true,
       provider: describeMemoryProvider(this.provider),
     }
@@ -219,6 +233,7 @@ export class FrontendMemoryRuntime {
 
   async close() {
     if (!this.closePromise) {
+      this.unsubscribeProvider?.()
       this.changeListeners.clear()
       this.closePromise = Promise.resolve().then(() => this.provider.close?.())
     }

@@ -1,0 +1,43 @@
+# Official server configuration; no secrets in this file.
+server:
+  transport: stdio
+  host: 127.0.0.1
+llm:
+  provider: openai
+  model: ${GRAPHITI_LLM_MODEL:qwen3.7-plus}
+  max_tokens: 8192
+  structured_output_mode: json_schema
+  providers:
+    openai:
+      api_key: ${GRAPHITI_LLM_API_KEY}
+      api_url: ${GRAPHITI_LLM_BASE_URL}
+embedder:
+  provider: openai
+  model: ${GRAPHITI_EMBEDDING_MODEL:text-embedding-v4}
+  dimensions: 1024
+  providers:
+    openai:
+      api_key: ${GRAPHITI_EMBEDDING_API_KEY}
+      api_url: ${GRAPHITI_EMBEDDING_BASE_URL}
+database:
+  provider: neo4j
+  providers:
+    neo4j:
+      uri: ${GRAPHITI_NEO4J_URI}
+      username: neo4j
+      password: ${GRAPHITI_NEO4J_PASSWORD}
+      database: neo4j
+      use_parallel_runtime: false
+graphiti:
+  group_id: qwaudio-private-default
+  user_id: user
+
+  entity_types:
+    - name: Person
+      description: 真实人物或对话说话者，保留明确身份和主体归属。
+    - name: Work
+      description: 可明确区分的命名作品、项目或产品。不同作品和不同版本应保留独立身份。
+    - name: Topic
+      description: 用户明确表达兴趣的主题、类别、类型或领域；可独立识别的类别本身可以作为偏好对象。
+    - name: Object
+      description: 可明确识别的物品、设备、宠物或其他具体对象。

@@ -45,6 +45,9 @@ export class RealtimeInputRuntime {
     shouldEnsurePermissionResponse,
     ensurePermissionResponseFor,
     reportFrontendError,
+    beforeUserInput = null,
+    onFinalTranscript = null,
+    onInputStarted = () => {},
     onSpeechStarted = () => {},
     onSpeechStopped = () => {},
     createInputTurnId = () => `text_${randomUUID().replaceAll('-', '')}`,
@@ -65,6 +68,7 @@ export class RealtimeInputRuntime {
     this.shouldEnsurePermissionResponse = shouldEnsurePermissionResponse
     this.ensurePermissionResponseFor = ensurePermissionResponseFor
     this.reportFrontendError = reportFrontendError
+    Object.assign(this, { beforeUserInput, onFinalTranscript, onInputStarted })
     this.onSpeechStarted = onSpeechStarted
     this.onSpeechStopped = onSpeechStopped
     this.createInputTurnId = createInputTurnId
@@ -247,6 +251,7 @@ export class RealtimeInputRuntime {
       content: transcript,
       turnId: transcriptTurn.turnId,
     })
+    this.onFinalTranscript?.(transcript, transcriptTurn)
   }
 
   submit(event) {
@@ -273,6 +278,7 @@ export class RealtimeInputRuntime {
       context: inputContext,
       supersededVoiceTurn,
     } = this.turns.beginManual(inputTurnId)
+    this.onInputStarted(inputContext)
     this.clearResponseCandidate()
     this.announcementWindow.beginTurn(inputTurnId)
     this.announcementWindow.endSpeech()
@@ -316,7 +322,11 @@ export class RealtimeInputRuntime {
       turnId: inputTurnId,
     })
     this.ensureFrontend()
-      .then(() => this.getFrontend().sendUserInput(parts, inputContext))
+      .then(async () => {
+        if (this.beforeUserInput && !await this.beforeUserInput(text || display, inputContext)) return
+        if (this.turns.isStale(inputContext)) return
+        return this.getFrontend().sendUserInput(parts, inputContext)
+      })
       .then(outcome => {
         if (!outcome?.timedOut) return
         this.turns.failManualInput(inputContext)

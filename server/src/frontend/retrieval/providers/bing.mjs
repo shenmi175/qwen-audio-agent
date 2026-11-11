@@ -111,7 +111,7 @@ export class BingWebSearchProvider {
   describe() {
     return {
       key: 'bing',
-      label: 'Bing Web Search (fallback)',
+      label: 'Bing Web Search',
     }
   }
 
@@ -119,7 +119,7 @@ export class BingWebSearchProvider {
     return true
   }
 
-  async #fetchPage(url, accept, signal) {
+  async #fetchPage(url, accept, signal, redirects = 0) {
     try {
       const response = await this.fetchImpl(url, {
         method: 'GET',
@@ -127,9 +127,21 @@ export class BingWebSearchProvider {
           accept,
           'user-agent': 'qwen-audio-agent web-search',
         },
-        redirect: 'error',
+        redirect: 'manual',
         signal,
       })
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location')
+        const target = location ? new URL(location, url) : null
+        if (redirects >= 2 || !target || target.protocol !== 'https:'
+          || !['www.bing.com', 'cn.bing.com'].includes(target.hostname)
+          || target.port || target.username || target.password || target.pathname !== '/search') {
+          await response.body?.cancel()
+          throw new BingWebSearchError('search_redirect_rejected', 'Bing 搜索跳转地址无效。')
+        }
+        await response.body?.cancel()
+        return this.#fetchPage(target, accept, signal, redirects + 1)
+      }
       const body = await boundedText(response)
       if (!response.ok) {
         throw new BingWebSearchError(

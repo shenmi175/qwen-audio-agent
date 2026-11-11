@@ -7,6 +7,7 @@ import { PERMISSION_DECISIONS } from '../core/work-authorization.mjs'
 import { enforceSameOrigin, isAllowedOrigin } from '../core/request-security.mjs'
 import { gatewayBrowserPairingPage } from '../access/browser-pairing-page.mjs'
 import { registerBrowserSharing } from '../access/browser-sharing.mjs'
+import { graphitiComponentStatus } from '../../../components/graphiti/lifecycle.mjs'
 import {
   GATEWAY_CAPABILITIES,
   GATEWAY_PROTOCOL_VERSION,
@@ -244,6 +245,10 @@ export function registerGatewayHttpRoutes(app, {
     res.json({ ok: true, status: 'live' })
   })
 
+  app.get('/api/components/graphiti', async (_req, res) => {
+    res.json(await graphitiComponentStatus())
+  })
+
   app.get('/readyz', (req, res) => {
     res.json({ ok: true, status: 'ready' })
   })
@@ -277,6 +282,7 @@ export function registerGatewayHttpRoutes(app, {
       realtimeProvider: realtime.provider,
       realtimeLabel: realtime.label,
       realtimeModel: realtime.model,
+      realtimeIdleTimeoutMs: config.realtimeIdleTimeoutMs,
       realtimeModelProfile: realtime.modelProfile,
       realtimeModelCatalog: realtime.modelCatalog,
       realtimeInputSampleRate: realtime.inputSampleRate,
@@ -292,6 +298,14 @@ export function registerGatewayHttpRoutes(app, {
         ok: true,
         configured: false,
         provider: null,
+      },
+      memoryLearning: {
+        provider: config.memoryProvider,
+        automaticExtraction: !frontendMemoryRuntime?.ownsSessionObservation?.()
+          && Boolean(config.memoryAutoEnabled && config.memoryApiKey),
+        providerObservation: frontendMemoryRuntime?.ownsSessionObservation?.() === true,
+        minUserMessages: config.memoryMinUserMessages ?? 4,
+        debounceSeconds: (config.memoryDebounceMs ?? 1800000) / 1000,
       },
       frontendProfile: config.frontendProfile || {
         configured: false,

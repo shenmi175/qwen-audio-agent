@@ -243,7 +243,8 @@
     "!**/*.log",
     "!**/.env",
     "!**/.env.*",
-    "examples/webrtc/.env.example"
+    "examples/webrtc/.env.example",
+    "components/graphiti/"
   ],
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
@@ -335,7 +336,11 @@
     "version:patch": "node scripts/set-version.mjs patch",
     "version:minor": "node scripts/set-version.mjs minor",
     "version:major": "node scripts/set-version.mjs major",
-    "release:check": "./scripts/release-check"
+    "release:check": "./scripts/release-check",
+    "graphiti:install": "node components/graphiti/cli.mjs install",
+    "graphiti:start": "node components/graphiti/cli.mjs start",
+    "graphiti:status": "node components/graphiti/cli.mjs status",
+    "graphiti:stop": "node components/graphiti/cli.mjs stop"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.3.0",

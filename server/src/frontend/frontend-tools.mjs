@@ -110,6 +110,11 @@ export function frontendTools(agentContext = {}) {
     if (tool === spawnThinkingTool && spawnThinkingDescription) {
       return withSpawnThinkingDescription(spawnThinkingDescription)
     }
+    if (tool.function.name === 'memory' && agentContext.frontend?.backgroundMemory) {
+      return { ...tool, function: { ...tool.function, description: '按需检索当前用户的长期事实或交互设定。',
+        parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters.properties,
+          action: { type: 'string', enum: ['read'] } } } } }
+    }
     if (tool.function.name === SCHEDULE_REMINDER_TOOL_NAME) {
       return scheduleToolForContext(agentContext)
     }
@@ -167,7 +172,7 @@ export function buildFrontendInstructions(agentContext = {}) {
     loadFrontendPrompt(),
     ...optionalFrontendFeatures.filter(feature => feature.entries.some(entry => (
       frontendToolRegistry.isEnabled(entry.definition.function.name, agentContext)
-    ))).map(feature => feature.instructions).filter(Boolean),
+    ))).map(feature => agentContext.frontend?.backgroundMemory && feature.entries.some(entry => entry.definition.function.name === 'memory') ? '' : feature.instructions).filter(Boolean),
     '# Assistant Profile',
     '<assistant_profile authority="persona_only">',
     resolveAssistantProfile(agentContext),

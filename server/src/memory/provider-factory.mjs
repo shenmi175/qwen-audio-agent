@@ -1,5 +1,7 @@
+import { GraphitiMemoryProvider } from './providers/graphiti/provider.mjs'
 import { MarkdownContextStore } from './providers/markdown/context-store.mjs'
 import { MarkdownMemoryProvider } from './providers/markdown/provider.mjs'
+import { shareMemoryProvider } from './shared-provider.mjs'
 import {
   VoiceMemProvider,
 } from './providers/voicemem/provider.mjs'
@@ -33,16 +35,20 @@ export function createConfiguredMemoryProvider({
   env = process.env,
 } = {}) {
   const selected = config?.memoryProvider || 'markdown'
+  const configured = provider => config.memoryScope === 'shared'
+    ? shareMemoryProvider(provider, config.personalOwnerId)
+    : provider
+  if (selected === 'graphiti') return configured(new GraphitiMemoryProvider({ config, logger }))
   if (selected === 'voicemem') {
-    return new VoiceMemProvider({
+    return configured(new VoiceMemProvider({
       stateDirectory: config.voiceMemStateDirectory,
       python: config.voiceMemPython || null,
       sidecarPath: config.voiceMemSidecarPath || null,
       env,
-    })
+    }))
   }
   if (selected === 'markdown') {
-    return createMarkdownProvider({ config, logger })
+    return configured(createMarkdownProvider({ config, logger }))
   }
   throw new Error(`不支持的记忆 Provider：${selected}`)
 }

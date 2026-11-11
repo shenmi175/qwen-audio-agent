@@ -6,8 +6,11 @@ const SENSITIVE_MEMORY = /(?:pass(?:word)?|secret|api[_ -]?key|access[_ -]?token
 
 const MEMORY_TOOL_DESCRIPTION = [
   '读取或编辑当前用户的长期个性化偏好与稳定事实；不是对话历史、工作进度、命名清单或知识库文档查询。',
+  '查询长期事实时使用 read 并提供 query；省略 query 时使用本轮用户原文检索。user 文档只含交互设定，不能据此判断长期事实是否存在。',
   '不确定要修改的旧内容时先读取，再使用精确原文修改。',
   '不要保存密码、密钥、验证码、令牌、支付信息、证件号或敏感精确地址。',
+  '兴趣与不喜欢、稳定习惯、家庭宠物、职业学习、持续目标和使用环境均可作为长期事实；首次明确陈述也可以保存。',
+  '禁止绕过用户对相应内容的禁止保存要求。医疗、过敏、心理健康、宗教政治等敏感信息，仅在用户明确要求记住时最小化保存，不从普通披露或提问推断。',
 ].join('')
 
 const memoryTool = {
@@ -31,7 +34,8 @@ const memoryTool = {
         old_text: { type: 'string', description: 'replace 时使用：在已提供或 read 返回的相应上下文中恰好出现一次的原文。' },
         new_text: { type: 'string', description: 'replace 时使用：替换后的内容；空字符串表示删除。' },
         content: { type: 'string', description: 'append 时追加的简洁、可读 Markdown 内容。' },
-        query: { type: 'string', description: 'read 时可选：要从长期记忆中查找的简洁自然语言问题。' },
+        fact_id: { type: 'string', description: 'Graphiti 读取结果的事实 ID；更正或遗忘时优先提供，不能猜测。' },
+        query: { type: 'string', description: 'read 查询长期事实时提供的自然语言问题；省略时使用当前轮用户原文，不读取旧文档替代图检索。' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -100,8 +104,21 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
       return
     }
     try {
-      const result = query && typeof runtime.memoryService.query === 'function'
-        ? await runtime.memoryService.query(runtime.ownerId, query, {
+      const semanticQuery = runtime.memoryService.capabilities?.().semanticQuery === true
+      const settingsOnly = semanticQuery && scope === 'user'
+      let searchQuery = settingsOnly ? '' : query
+      if (semanticQuery && !settingsOnly && !searchQuery) {
+        // Restrict the fallback to this exact turn, never a previous session.
+        searchQuery = String(await runtime.transcripts?.transcript?.(turnId) || '').trim()
+        if (!searchQuery) {
+          await runtime.sendOutput(callId, toolFailure('memory_query_required',
+            '请提供 query 查询长期事实；当前轮原文不可用，不能把交互设定快照当成事实检索结果。'),
+          turnId, null, responseOptions)
+          return
+        }
+      }
+      const result = searchQuery && typeof runtime.memoryService.query === 'function'
+        ? await runtime.memoryService.query(runtime.ownerId, searchQuery, {
             ...(scope ? { scope } : {}),
             limit: 8,
           }, {
@@ -116,10 +133,19 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
               : runtime.memoryService.list(runtime.ownerId),
             context: '',
           }
-      const memories = result.memories
+      const memories = result.memories || []
+      const facts = Array.isArray(result.facts) ? result.facts : []
       output = {
-        status: memories.length || result.context ? 'ok' : 'not_found',
-        count: memories.length,
+        status: ['failed','timeout','disabled'].includes(result.status) ? result.status : result.status === 'empty' ? 'not_found' : (memories.length || facts.length || result.context ? 'ok' : 'not_found'),
+        ...(result.code ? { code: result.code } : {}),
+        ...(result.facts ? { facts: result.facts, traceId: result.trace_id, readVersion: result.read_version } : {}),
+        count: memories.length + facts.length,
+        ...(semanticQuery ? {
+          data_scope: settingsOnly ? 'interaction_settings' : 'long_term_facts',
+          instruction: settingsOnly
+            ? '此结果仅含交互设定，不表示长期事实不存在。查询个人事实须 read 并提供 query；不要以此覆盖本轮已检索到的事实。'
+            : 'facts 是本次从长期图记忆检索到的当前有效事实，不是示例。根据事实和来源作答；新会话不代表记忆丢失。未命中只能说明本次没查到，不能推断过期或保留期限。',
+        } : {}),
         documents: memories,
         ...(result.context ? { context: result.context } : {}),
       }
@@ -146,7 +172,7 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
     try {
       const change = {
         document,
-        edits: action === 'replace' ? [{ old_text: oldText, new_text: newText }] : [],
+        edits: action === 'replace' ? [{ old_text: oldText, new_text: newText, ...(args.fact_id ? { fact_ids: [args.fact_id] } : {}) }] : [],
         append: action === 'append' ? content : '',
       }
       const result = await runtime.memoryService.apply(runtime.ownerId, [change], {
@@ -157,7 +183,8 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
       })
       if (result.changed) notifyMemoryChanged(runtime)
       output = {
-        status: result.changed ? 'updated' : 'unchanged',
+        status: result.task && result.task.status !== 'succeeded' ? result.task.status : (result.changed ? 'updated' : 'unchanged'),
+        ...(result.task ? { task: result.task, instruction: '只有任务 succeeded 才可反馈已记住、已更正或已遗忘。' } : {}),
         changed: result.changed,
         documents: result.documents,
       }

@@ -281,6 +281,7 @@ export const config = {
   memoryProvider: normalizeMemoryProviderSelection(
     process.env.QWEN_AUDIO_MEMORY_PROVIDER,
   ),
+  memoryScope: process.env.QWEN_AUDIO_MEMORY_SCOPE === 'shared' ? 'shared' : 'user',
   voiceMemStateDirectory: process.env.VOICEMEM_STATE_DIR
     ? resolve(root, process.env.VOICEMEM_STATE_DIR)
     : resolve(runtimeEnvironment.dataDirectory, 'memory/voicemem'),
@@ -563,6 +564,8 @@ export const config = {
   memoryAutoEnabled: String(
     process.env.QWEN_AUDIO_MEMORY_AUTO || 'on',
   ).toLowerCase() !== 'off',
+  memoryMinUserMessages: numberSetting(process.env.QWEN_AUDIO_MEMORY_MIN_USER_MESSAGES, 4, { min: 1, max: 100 }),
+  memoryDebounceMs: numberSetting(process.env.QWEN_AUDIO_MEMORY_DEBOUNCE_SECONDS, 1800, { min: 0, max: 86400 }) * 1000,
   memoryModel: String(process.env.QWEN_AUDIO_MEMORY_MODEL || '').trim()
     || 'qwen-flash',
   memoryBaseUrl: (

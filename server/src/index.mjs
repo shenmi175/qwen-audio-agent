@@ -8,6 +8,7 @@ import { createLogger } from '../../shared/logger.mjs'
 import { acquireGatewayLease } from '../../shared/gateway/lease.mjs'
 import { assertGatewaySetup } from '../../shared/gateway/setup.mjs'
 import { startManagedBackend } from './process/managed-backend.mjs'
+import { ensureGraphitiComponent } from '../../components/graphiti/lifecycle.mjs'
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const root = process.env.QWEN_AUDIO_AGENT_RUNTIME_ROOT || sourceRoot
@@ -83,6 +84,7 @@ try {
     // 离线等失败不阻塞语音网关启动；技能可下次启动再补。
     logger.warn('skills.backfill_failed', { error })
   }
+  await ensureGraphitiComponent({ logger })
   backendRuntime = await startManagedBackend({ root, logger })
   const managedBackend = backendRuntime.child
   const onManagedBackendExit = (code, signal) => {

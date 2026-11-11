@@ -49,6 +49,7 @@ export function registerBrowserSharing(app, { config, access, publicEndpoint, ge
       res.status(201).json({
         id: ticket.id, url: shareUrl, secureUrl, qrCode, secureQrCode,
         expiresAt: ticket.expiresAt, certificateSetup: Boolean(setupOrigin),
+        sharedMemory: config.memoryScope === 'shared',
       })
     } catch (error) {
       if (ticket) access.revokeBrowserShare(ticket.id, req.identity.ownerId)

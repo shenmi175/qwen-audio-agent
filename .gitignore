@@ -44,3 +44,10 @@ sidecars/tsnet/dist/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/.vitepress/.site/
+
+# Private diagnostics, IDE state, and durable runtime stores.
+.idea/
+*.sqlite3
+*.sqlite3-*
+*.private.json
+*.private.jsonl

@@ -1,3 +1,5 @@
+import { MemoryBatchObserver } from './batch-observer.mjs'
+import { dirname, join } from 'node:path'
 import { FrontendMemoryRuntime } from './runtime.mjs'
 import { createConfiguredMemoryProvider } from './provider-factory.mjs'
 import { MemoryExtractor } from './learning/extractor.mjs'
@@ -33,6 +35,8 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
         conversationSync,
         audit,
         llmCall: textModelCall,
+        minUserMessages: config.memoryMinUserMessages,
+        debounceMs: config.memoryDebounceMs,
         logger,
       })
   // 偏好自更新：观察器从刚结束的会话里推断画像信号 → 槽位池积累跨会话确认 →
@@ -80,6 +84,10 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
         preferenceCandidates?.discardPending(event.ownerId)
       })
     : null
+  const batchObserver = config.memoryProvider === 'graphiti'
+    ? new MemoryBatchObserver({ path: join(dirname(config.userModelPath), 'graphiti-batches.sqlite3'),
+        memoryService: frontendMemoryRuntime, conversationSync, logger })
+    : null
   return {
     services: {
       frontendMemory: frontendMemoryRuntime,
@@ -87,15 +95,43 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
       memoryProvider: memoryProviderRuntime,
       preferenceCandidates, preferencePromoter, profileObserver,
     },
-    sessionObservers: [new MemorySessionObserver({
+    sessionObservers: batchObserver ? [batchObserver] : [new MemorySessionObserver({
       memoryService: frontendMemoryRuntime, memoryExtractor, preferencePromoter,
       profileObserver, conversationSync,
     })],
-    close: () => {
+    close: async () => {
       unsubscribeLearning?.()
+      await batchObserver?.close()
       return frontendMemoryRuntime?.close?.()
     },
     mountRoutes(app) {
+      app.get('/api/memory/status', (_req, res) => res.json({
+        provider: config.memoryProvider,
+        scope: config.memoryScope || 'user',
+        automaticExtraction: Boolean(memoryExtractor?.enabled()),
+        providerObservation: providerOwnsSessionObservation,
+        backgroundBatch: batchObserver?.health(),
+        extractionTrigger: batchObserver ? 'connection-close' : 'provider-default',
+        minUserMessages: config.memoryMinUserMessages ?? 4,
+        debounceSeconds: (config.memoryDebounceMs ?? 1800000) / 1000,
+        preferenceLearning: Boolean(config.preferenceLearningEnabled),
+        sessionDigest: Boolean(config.sessionDigestEnabled),
+        graphiti: { enabled: process.env.QWEN_AUDIO_GRAPHITI_ENABLED === 'on', memoryIntegration: config.memoryProvider === 'graphiti' },
+        runtime: frontendMemoryRuntime?.health(),
+      }))
+      if (config.memoryProvider === 'graphiti') {
+        for (const [suffix, operation] of [['query','query'],['observe','observe'],['apply','apply'],['wait','wait'],['task','task'],['retry','retry']]) {
+          app.post(`/api/memory/${suffix}`, async (req, res) => {
+            try {
+              const result = await memoryProviderRuntime.control(req.identity.ownerId, operation, req.body || {})
+              res.status(['observe','apply','retry'].includes(operation) ? 202 : 200).json(result)
+            } catch (e) {
+              // Only fixed codes leave the memory boundary, never raw upstream errors.
+              res.status(e.code?.includes('CLARIFICATION') ? 409 : 503).json({code:e.code || 'GRAPHITI_UNAVAILABLE'})
+            }
+          })
+        }
+      }
       // Provider-neutral memory control plane for replaceable Conversation Clients.
       // It exposes the same bounded documents used by Realtime without leaking the
       // Markdown default or any injected provider's persistence details.

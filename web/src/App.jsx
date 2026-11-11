@@ -467,7 +467,9 @@ export default function App() {
           label: payload.realtimeLabel || payload.realtimeProvider || 'Realtime Agent',
         })
         setModelStatus(realtimeModelStatus(payload))
-        setWebCapabilities({ knowledge: payload.frontendKnowledge?.configured === true })
+        setWebCapabilities({ knowledge: payload.frontendKnowledge?.configured === true,
+          memory: payload.frontendMemory, memoryLearning: payload.memoryLearning,
+          realtimeIdleTimeoutMs: payload.realtimeIdleTimeoutMs })
         setGatewayRuntime(gatewayReady ? 'ready' : 'failed')
         setBackend({
           label,
@@ -1640,6 +1642,8 @@ export default function App() {
       onClose={() => setWebSettingsOpen(false)} modelLabel={modelLabel}
       modelInputModes={modelStatus.modelInputModes} backendEnabled={backend.enabled === true}
       knowledgeConfigured={webCapabilities.knowledge}
+      memoryStatus={webCapabilities.memory} memoryLearning={webCapabilities.memoryLearning}
+      realtimeIdleTimeoutMs={webCapabilities.realtimeIdleTimeoutMs}
       connected={connectionEnabled} microphoneEnabled={voiceEnabled}
       microphoneLabel={voiceControlLabel} statusText={webStatusText}
       onToggleConnection={toggleConnection}

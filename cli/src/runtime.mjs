@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
+import { ensureGraphitiComponent } from '../../components/graphiti/lifecycle.mjs'
 import { requireWebRtcDependencies } from '../../shared/gateway/webrtc.mjs'
 import {
   backendDefinition,
@@ -470,6 +471,10 @@ export async function ensureRuntime(options, {
         throw new Error('本地自动启动 Gateway 只支持 http 地址')
       }
       Object.assign(env, backendEnvironment(env, backend))
+      // Components may cold-start a database; prepare them before the Gateway
+      // readiness timer starts. The server repeats this idempotent check for
+      // direct, service and embedded starts.
+      if (env.QWEN_AUDIO_GRAPHITI_ENABLED === 'on') await ensureGraphitiComponent()
       const spec = gatewaySpawn(
         root,
         platform,

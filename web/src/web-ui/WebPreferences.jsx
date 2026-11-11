@@ -1,12 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import { BUILTIN_ORB_SKINS, isBuiltinOrbSkin } from '../../../shared/orb-skin-catalog.mjs'
 import { t } from '../i18n.js'
+import { memoryCapability } from './memory-capability.mjs'
 
 export default function WebPreferences({ preferences, onChange, onClose, modelLabel,
   modelInputModes = [], backendEnabled, knowledgeConfigured, onOpenLibrary, onNewSession,
   connected, microphoneEnabled, microphoneLabel, onToggleConnection, onToggleMicrophone,
-  onShare, videoSupported, videoOpen, onToggleVideo, statusText }) {
+  onShare, videoSupported, videoOpen, onToggleVideo, statusText, memoryStatus, memoryLearning, realtimeIdleTimeoutMs }) {
   const dialog = useRef(null)
+  const [graphiti, setGraphiti] = useState(null)
+  const [liveMemory, setLiveMemory] = useState(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    let active = true
+    const read = (path, accept) => fetch(path, { signal: controller.signal, cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(value => { if (active) accept(value) })
+      .catch(() => { if (active) accept(null) })
+    const refresh = () => {
+      read('/api/components/graphiti', setGraphiti)
+      read('/api/memory/status', setLiveMemory)
+    }
+    refresh()
+    const timer = setInterval(refresh, 5000)
+    return () => { active = false; clearInterval(timer); controller.abort() }
+  }, [])
+  const idleSeconds = Number.isFinite(realtimeIdleTimeoutMs)
+    ? Math.max(0, Math.round(realtimeIdleTimeoutMs / 1000)) : null
+  const idleDuration = idleSeconds && idleSeconds % 60 === 0
+    ? t('{minutes} 分钟', { minutes: idleSeconds / 60 })
+    : t('{seconds} 秒', { seconds: idleSeconds })
+  const learning = liveMemory || memoryLearning || {}
+  const memoryCapabilityState = memoryCapability({ learning, memory: memoryStatus, graphiti })
   const [systemReducesMotion, setSystemReducesMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   useEffect(() => {
     const media = matchMedia('(prefers-reduced-motion: reduce)')
@@ -73,16 +98,28 @@ export default function WebPreferences({ preferences, onChange, onClose, modelLa
     <section>
       <h3>{t('当前能力')}</h3>
       <dl className="web-capabilities">
+        <div><dt>{t('长期记忆')}</dt><dd>{memoryStatus?.scope === 'shared' ? t('所有设备共享') : t('按用户独立')}</dd></div>
+        <div><dt>{t('自动记忆提取')}</dt><dd>{memoryCapabilityState.automatic ? t('已开启') : t('未启用或缺少分析 Key')}</dd></div>
+        <div><dt>Graphiti</dt><dd>{t(memoryCapabilityState.graphitiLabel)}</dd></div>
         <div><dt>{t('文字与语音')}</dt><dd>{t('可用')}</dd></div>
         <div><dt>{t('图片与实时视频')}</dt><dd>{modelInputModes.includes('video') ? t('可用') : t('当前模型不支持')}</dd></div>
         <div><dt>{t('后台任务')}</dt><dd>{backendEnabled ? t('已配置') : t('未配置')}</dd></div>
         <div><dt>{t('资料库')}</dt><dd>{knowledgeConfigured ? t('已配置') : t('未配置')}</dd></div>
       </dl>
+      {memoryCapabilityState.mode === 'connection-close' && <p className="web-settings-hint">{t('连接关闭后在后台提取长期记忆。')}</p>}
+      {memoryCapabilityState.mode === 'per-turn' && <p className="web-settings-hint">{t('逐轮检索，自动保存有长期价值的事实。')}</p>}
+      {memoryCapabilityState.mode === 'provider' && <p className="web-settings-hint">{t('由当前记忆服务自动保存。')}</p>}
+      {memoryCapabilityState.mode === 'session-close' && <p className="web-settings-hint">{t('会话结束后提取；至少 {count} 条用户消息，提取间隔 {seconds} 秒。', {
+        count: learning.minUserMessages, seconds: learning.debounceSeconds,
+      })}</p>}
       <p className="web-settings-hint">{t('图片、视频和后台任务按当前模型及服务配置开放。')}</p>
     </section>
     <section>
       <h3>{t('连接与隐私')}</h3>
-      <p className="web-settings-hint">{t('麦克风静音只停止收音；断开连接会同时停止收音、播放和模型连接。空闲 30 秒后自动断开，点击“开始对话”恢复。')}</p>
+      <p className="web-settings-hint">{t('麦克风静音只停止收音；断开连接会同时停止收音、播放和模型连接。')}</p>
+      {idleSeconds !== null && <p className="web-settings-hint">{idleSeconds > 0
+        ? t('连续空闲 {duration} 后自动断开，回复和播放期间保留连接；点击“开始对话”恢复。', { duration: idleDuration })
+        : t('未启用空闲自动断开。')}</p>}
     </section>
   </dialog>
 }

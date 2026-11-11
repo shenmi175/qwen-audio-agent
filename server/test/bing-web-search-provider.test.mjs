@@ -32,7 +32,7 @@ test('prefers the HTML web search page and parses b_algo results', async () => {
   assert.equal(requests[0].url.origin, 'https://www.bing.com')
   assert.equal(requests[0].url.searchParams.get('q'), 'latest facts')
   assert.equal(requests[0].url.searchParams.get('format'), null)
-  assert.equal(requests[0].options.redirect, 'error')
+  assert.equal(requests[0].options.redirect, 'manual')
   assert.deepEqual(result, {
     results: [{
       title: 'First & current',
@@ -90,4 +90,27 @@ test('tolerates invalid numeric entities in untrusted result markup', () => {
     'First &#9999999999;</strong>',
   )
   assert.equal(parseBingHtmlResults(html)[0].title, 'First \ufffd & current')
+})
+
+test('follows the Bing China regional redirect', async () => {
+  const requests = []
+  const provider = new BingWebSearchProvider({ fetchImpl: async url => {
+    requests.push(url)
+    return requests.length === 1
+      ? new Response(null, { status: 302, headers: { location: 'https://cn.bing.com/search?q=test' } })
+      : new Response(SEARCH_HTML)
+  } })
+  assert.equal((await provider.search('test')).results.length, 2)
+  assert.equal(requests[1].hostname, 'cn.bing.com')
+})
+test('rejects redirects outside Bing and limits redirect loops', async () => {
+  for (const location of ['http://cn.bing.com/search', 'https://evil.example/search', 'https://cn.bing.com/search']) {
+    let calls = 0
+    const provider = new BingWebSearchProvider({ fetchImpl: async () => {
+      calls++
+      return new Response(null, { status: 302, headers: { location } })
+    } })
+    await assert.rejects(provider.search('test'), e => e.code === 'search_redirect_rejected')
+    assert.ok(calls <= 3)
+  }
 })
