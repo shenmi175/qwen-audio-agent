@@ -1,3 +1,4 @@
+import { diagnosticsEnvironment, diagnosticsConfigurationFingerprint } from '../diagnostics/lifecycle.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, closeSync, rmSync, realpathSync } from 'node:fs'
@@ -13,7 +14,7 @@ const python = resolve(state, 'mcp-venv/bin/python')
 const pidFile = resolve(state, 'service.pid')
 const origin = () => `http://127.0.0.1:${Number(process.env.QWEN_AUDIO_GRAPHITI_PORT || 8310)}`
 const integrationFingerprint = () => createHash('sha256').update(Buffer.concat(
-  ['memory_provider.py', 'official_mcp.py', 'qwen_schema_adapter.py', 'memory_policy.py', 'mcp-config.yaml', 'requirements.lock']
+  ['memory_provider.py', 'official_mcp.py', 'qwen_schema_adapter.py', 'memory_policy.py', 'mcp-config.yaml', 'requirements.lock','mcp_tracing.py','../diagnostics/qwaudio_diagnostics/__init__.py','../diagnostics/qwaudio_diagnostics/otlp.py']
     .map(name => readFileSync(resolve(component, name))))).digest('hex')
 const wait = ms => new Promise(done => setTimeout(done, ms))
 
@@ -31,7 +32,7 @@ function environment() {
   const baseUrl = process.env.QWEN_AUDIO_MEMORY_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
   const apiKey = process.env.QWEN_AUDIO_GRAPHITI_API_KEY || process.env.QWEN_AUDIO_MEMORY_API_KEY || process.env.DASHSCOPE_API_KEY || ''
   return {
-    ...process.env, ...localSecrets(),
+    ...process.env, ...localSecrets(), ...diagnosticsEnvironment(),
     GRAPHITI_QUEUE_PATH: resolve(state, 'queue.sqlite3'),
     GRAPHITI_NEO4J_URI: `bolt://127.0.0.1:${process.env.GRAPHITI_NEO4J_BOLT_PORT || 7688}`,
     GRAPHITI_LLM_API_KEY: apiKey,
@@ -70,13 +71,14 @@ export async function installGraphitiComponent() {
     timeout: 600000, maxBuffer: 8 * 1024 * 1024,
   })
   await run(python, ['-m', 'pip', 'install', '--no-deps', '-e', resolve(upstream, 'mcp_server')], { timeout: 120000 })
+  await run(python, ['-m', 'pip', 'install', '--no-deps', '-e', resolve(root, 'components/diagnostics')], { timeout: 120000 })
   return { installed: true, python }
 }
 
 export async function ensureGraphitiComponent({ logger } = {}) {
   if (process.env.QWEN_AUDIO_GRAPHITI_ENABLED !== 'on') return { enabled: false }
   const current = await graphitiComponentStatus()
-  if (current.status === 'ready' && current.integrationVersion === 6 && current.integrationFingerprint === integrationFingerprint()
+  if (current.status === 'ready' && current.integrationVersion === 6 && current.integrationFingerprint === integrationFingerprint() && current.diagnostics?.configurationFingerprint === diagnosticsConfigurationFingerprint()
     && current.memoryIntegration === (process.env.QWEN_AUDIO_MEMORY_PROVIDER === 'graphiti')) return current
   if (current.status === 'ready') await stopGraphitiService()
   if (!existsSync(python)) throw new Error('Graphiti 未安装：请先运行 npm run graphiti:install')
@@ -100,7 +102,7 @@ export async function ensureGraphitiComponent({ logger } = {}) {
     for (let attempt = 0; attempt < 90; attempt++) {
       if (child.exitCode !== null || child.signalCode !== null) break
       const status = await graphitiComponentStatus()
-      if (status.status === 'ready' && status.integrationVersion === 6 && status.integrationFingerprint === integrationFingerprint()) {
+      if (status.status === 'ready' && status.integrationVersion === 6 && status.integrationFingerprint === integrationFingerprint() && status.diagnostics?.configurationFingerprint === diagnosticsConfigurationFingerprint()) {
         writeFileSync(pidFile, `${child.pid}\n`, { mode: 0o600 })
         logger?.info('component.graphiti_ready', { url: origin(), memoryIntegration: status.memoryIntegration, transport: status.transport })
         return status

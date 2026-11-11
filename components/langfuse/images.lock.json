@@ -1,0 +1,32 @@
+[
+  {
+    "image": "docker.io/langfuse/langfuse:4.78.0",
+    "manifest": "sha256:129cb76d4cdf6b2be2beaffe5c4b3b8e56af91cdb3e95d47cef0ef73583e7e1d",
+    "config": "sha256:c0e2524b91bed6ec003cc6da0d4afe2872c3b879c0de85ad131fbf6738e9e272"
+  },
+  {
+    "image": "docker.io/langfuse/langfuse-worker:4.78.0",
+    "manifest": "sha256:74c8020966a9556b25c21e368b64c9cfe24e1df1c4f76569aee6d230c9443de5",
+    "config": "sha256:a4e4330465706424b8b84e37280849270bc9b45da6870a7d50ce7448c790371c"
+  },
+  {
+    "image": "docker.io/postgres:17.7",
+    "manifest": "sha256:030da09481c3876b71a7e49738a932e1c18c398201a1e4ccfdbff1e5a541215b",
+    "config": "sha256:6c2f8e0ad2949b4e100456f138b1184fe58cb2010cd7a9721008abb87f501458"
+  },
+  {
+    "image": "docker.io/clickhouse/clickhouse-server:26.3.62.3",
+    "manifest": "sha256:6eb24df16477b65c87b772a56eb341a9624529491856c103e74c537db59669f1",
+    "config": "sha256:b8f16712a8012a59005e27fe5cebf3874ca5d810ac049c5e147783b1de153e47"
+  },
+  {
+    "image": "cgr.dev/chainguard/minio:latest",
+    "manifest": "sha256:5cfb31567972802ece1a39bb076078fda00095c7d11e82be65e762c528994608",
+    "config": "sha256:15d0ef11da854b79f1f02a38592e1b4338d9d2de090ad7c75834df54da91d6b4"
+  },
+  {
+    "image": "docker.io/redis:7.4.6",
+    "config": "sha256:b4e53bb4637c329c42395eec0b86851f5314f6ed597ec217b5e4e19f7c102c11",
+    "manifest": "sha256:a9cc41d6d01da2aa26c219e4f99ecbeead955a7b656c1c499cce8922311b2514"
+  }
+]

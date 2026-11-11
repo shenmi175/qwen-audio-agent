@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwaudio-diagnostics"
+version = "0.1.0"
+description = "Optional, provider-neutral diagnostics for Qwen Audio components"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+otlp = ["opentelemetry-api==1.45.2", "opentelemetry-sdk==1.45.2", "opentelemetry-exporter-otlp-proto-http==1.45.2"]
+
+[tool.setuptools.packages.find]
+include = ["qwaudio_diagnostics*"]

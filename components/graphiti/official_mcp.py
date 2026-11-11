@@ -10,6 +10,7 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from memory_queue import MemoryErrorCode
+from qwaudio_diagnostics import get_recorder, carrier
 
 COMMIT = 'ebef986a0b2360211b65751c111cacb4a7d790eb'
 VERSION = '1.1.3'
@@ -44,6 +45,7 @@ class OfficialMCP:
         self.stack = AsyncExitStack()
         self.session = None
         self.telemetry = telemetry or (lambda value:None)
+        self.diagnostics = get_recorder()
         self.adapter = None
 
     async def initialize(self):
@@ -87,7 +89,7 @@ class OfficialMCP:
         try:
             streams = await self.stack.enter_async_context(stdio_client(StdioServerParameters(
                 command=sys.executable,
-                args=[str(source / 'main.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
+                args=[str(self.root / 'components/graphiti/mcp_tracing.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
                       '--transport', 'stdio'],
                 cwd=str(source), env=child_env), errlog=self.stderr))
             self.session = await self.stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=15))
@@ -114,6 +116,19 @@ class OfficialMCP:
         return None
 
     async def call(self, name, arguments=None):
+        if name == 'get_status':
+            return await self._call(name,arguments)
+        with self.diagnostics.span('mcp.'+name,kind='tool',input=arguments) as observation:
+            args = dict(arguments or {})
+            if name == 'add_memory' and observation.trace_id:
+                source = json.loads(args.get('source_description') or '{}')
+                source['_qwaudio_trace'] = carrier()
+                args['source_description'] = json.dumps(source,ensure_ascii=False)
+            value = await self._call(name,args)
+            observation.update(output=value)
+            return value
+
+    async def _call(self, name, arguments=None):
         result = await self.session.call_tool(name, arguments or {}, read_timeout_seconds=180 if name in ('delete_episode', 'clear_graph') else 15)
         value = getattr(result, 'structured_content', None)
         if value is None:

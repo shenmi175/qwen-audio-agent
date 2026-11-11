@@ -17,6 +17,7 @@ from jsonschema import Draft202012Validator, SchemaError
 from openai import AsyncOpenAI
 
 from memory_queue import MemoryErrorCode
+from qwaudio_diagnostics import get_recorder, remote_context
 
 
 class QwenSchemaAdapter:
@@ -24,6 +25,7 @@ class QwenSchemaAdapter:
 
     def __init__(self, *, client=None, telemetry=None):
         self.client = client
+        self.diagnostics = get_recorder()
         self.telemetry = telemetry or (lambda value: None)
         self.token = uuid.uuid4().hex + uuid.uuid4().hex
         self.server = None
@@ -81,9 +83,17 @@ class QwenSchemaAdapter:
         return request, validator
 
     async def complete(self, payload):
+        schema = payload.get('response_format',{}).get('json_schema',{}).get('name','unstructured')
+        with self.diagnostics.span('graphiti.schema.'+schema,input=payload,
+                metadata={'schema':schema}) as observation:
+            result = await self._complete(payload)
+            observation.update(output=result)
+            return result
+
+    async def _complete(self, payload):
         started = time.monotonic()
         request, validator = self.prepare(payload)
-        response = await self.client.chat.completions.create(**request)
+        response = await self.diagnostics.completion(self.client,name="graphiti.model",**request)
         value = None
         errors = []
         reason = 'invalid_json'
@@ -160,7 +170,8 @@ class QwenSchemaAdapter:
                     payload = json.loads(body)
                     if not isinstance(payload,dict):
                         raise ValueError()
-                    value = await self.complete(payload)
+                    with remote_context(headers):
+                        value = await self.complete(payload)
                     status, code = 200, None
             if status != 200:
                 value = {'error':{'type':'provider_adapter_error','code':code,'message':code}}

@@ -59,7 +59,7 @@ async def ready():
     await memory.ready()
     return {'component': 'qwaudio-graphiti', 'status': 'ready', 'graphitiVersion': version('graphiti-core'),
             'database': 'neo4j', 'modelsConfigured': bool(os.environ.get('GRAPHITI_LLM_API_KEY')),
-            'integrationVersion': 6, 'integrationFingerprint': INTEGRATION_FINGERPRINT, 'transport': 'official-mcp', 'structuredOutput': 'qwen-forced-function', 'mcpVersion': '1.1.3', 'mcpCommit': __import__('official_mcp').COMMIT, 'agentModel': memory.model, 'graphModel': memory.config['llm_model'], 'memoryIntegration': os.environ.get('QWEN_AUDIO_MEMORY_PROVIDER') == 'graphiti'}
+            'diagnostics': memory.diagnostics.health(), 'integrationVersion': 6, 'integrationFingerprint': INTEGRATION_FINGERPRINT, 'transport': 'official-mcp', 'structuredOutput': 'qwen-forced-function', 'mcpVersion': '1.1.3', 'mcpCommit': __import__('official_mcp').COMMIT, 'agentModel': memory.model, 'graphModel': memory.config['llm_model'], 'memoryIntegration': os.environ.get('QWEN_AUDIO_MEMORY_PROVIDER') == 'graphiti'}
 
 
 class Body(BaseModel):
@@ -70,6 +70,7 @@ class Body(BaseModel):
 class Query(Body):
     query: str = Field(min_length=1, max_length=12000)
     required_version: int | None = Field(default=None, ge=0)
+    session_id: str | None = Field(default=None, max_length=200)
 
 
 class Observe(Body):
@@ -103,7 +104,7 @@ async def status(body: Body):
 
 @app.post('/memory/query', dependencies=[Depends(authenticate)])
 async def query(body: Query):
-    return await memory.query(body.query, user_id=body.owner_id, required_version=body.required_version)
+    return await memory.query(body.query, user_id=body.owner_id, required_version=body.required_version, conversation_id=body.session_id)
 
 
 @app.post('/memory/observe', dependencies=[Depends(authenticate)], status_code=202)

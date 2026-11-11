@@ -43,7 +43,8 @@ export class GraphitiMemoryProvider {
   }
   async query(ownerId, query, _options = {}, _context = {}) {
     this.owner = ownerId
-    const value = await this.call('/memory/query', { owner_id: ownerId, query })
+    const value = await this.call('/memory/query', { owner_id: ownerId, query,
+      ...(_context.sessionId ? { session_id: _context.sessionId } : {}) })
     this.state.error_code = value.code || null
     this.state.read_version = value.read_version
     this.logger?.info('memory.graphiti_query', { traceId: value.trace_id,
