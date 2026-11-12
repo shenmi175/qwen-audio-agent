@@ -1,3 +1,4 @@
+import { displayModelInput, displayModelOutput } from './chat-format.mjs'
 import { estimateUsageCost } from './pricing.mjs'
 import {
   context,
@@ -12,6 +13,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { diagnosticsEnvironment } from './lifecycle.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 let tracer, processor
+const toolSpans = new WeakSet()
 let secrets = {}
 const health = {
   enabled: false,
@@ -125,6 +127,16 @@ export function initializeDiagnostics({
     health.errorCode = 'DIAGNOSTICS_INITIALIZATION_FAILED'
   }
 }
+export function recordToolOutput(output) {
+  try {
+    const span = trace.getSpan(context.active())
+    if (span && toolSpans.has(span))
+      span.setAttribute(
+        'langfuse.observation.output',
+        JSON.stringify(sanitize(output)),
+      )
+  } catch {}
+}
 export function diagnosticsHealth() {
   return { ...health }
 }
@@ -147,7 +159,15 @@ export function diagnosticCarrier() {
 }
 export function observation(
   name,
-  { input, metadata = {}, parent, kind = 'span', model, root = false } = {},
+  {
+    input,
+    metadata = {},
+    parent,
+    kind = 'span',
+    model,
+    root = false,
+    sessionView,
+  } = {},
 ) {
   if (!tracer) return noop
   try {
@@ -155,7 +175,9 @@ export function observation(
       inherited = { ...(parent?.metadata || {}), ...metadata }
     for (const [k, v] of Object.entries(inherited))
       if (v != null) attrs['langfuse.observation.metadata.' + k] = String(v)
-    if (inherited.sessionId) attrs['session.id'] = String(inherited.sessionId)
+    const visibleInSession = sessionView ?? parent?.sessionView ?? true
+    if (visibleInSession && inherited.sessionId)
+      attrs['session.id'] = String(inherited.sessionId)
     if (inherited.userId)
       attrs['user.id'] = createHash('sha256')
         .update(String(inherited.userId))
@@ -172,10 +194,12 @@ export function observation(
           ? ROOT_CONTEXT
           : context.active(),
     )
+    if (kind === 'tool') toolSpans.add(span)
     let ended = false
     const record = {
       span,
       metadata: inherited,
+      sessionView: visibleInSession,
       run: (fn) => context.with(trace.setSpan(context.active(), span), fn),
       update(fields) {
         try {
@@ -219,12 +243,33 @@ export function observation(
     return noop
   }
 }
+export function chatMessages(role, value) {
+  const text =
+    typeof value === 'string'
+      ? value
+      : value?.content ||
+        value?.text ||
+        (value?.parts || [])
+          .filter((p) => p.type === 'text')
+          .map((p) => p.text)
+          .join('\n')
+  return typeof text === 'string' && text.trim()
+    ? [{ role, content: text }]
+    : []
+}
+
 export class RealtimeDiagnostics {
   constructor(metadata = {}, model) {
     this.metadata = { ...metadata, connectionId: randomUUID() }
     this.model = model
     this.responses = new Map()
     this.turn = null
+    this.connection = observation('connection', {
+      metadata: this.metadata,
+      root: true,
+      sessionView: false,
+    })
+    this.pendingInputs = new Map()
     this.audioBytes = 0
     this.contextEvents = []
     this.contextBytes = 0
@@ -234,19 +279,52 @@ export class RealtimeDiagnostics {
   event(event) {
     try {
       if (['text.message', 'input.message'].includes(event.type))
-        this.userInput = event
+        this.userInput = chatMessages('user', event)
       if (event.type === 'transcript.final' && event.role === 'user') {
-        this.userInput = { text: event.content }
-        this.turn?.update({ input: this.userInput })
+        this.userInput = chatMessages('user', event.content)
+        if (!event.turnId || event.turnId === this.turn?.metadata?.turnId) {
+          this.turnInput = this.userInput
+          for (const response of this.responses.values())
+            if (
+              !event.turnId ||
+              response.record.metadata?.turnId === event.turnId
+            )
+              response.record.update({
+                input: displayModelInput(
+                  this.configuration,
+                  this.contextEvents.map((x) => x.event),
+                  this.userInput,
+                ),
+              })
+        }
+        if (event.turnId) {
+          this.pendingInputs.set(event.turnId, this.userInput)
+          if (this.pendingInputs.size > 64)
+            this.pendingInputs.delete(this.pendingInputs.keys().next().value)
+        }
+        if (!event.turnId || event.turnId === this.turn?.metadata?.turnId)
+          this.turn?.update({ input: this.userInput })
       }
-      if (event.type === 'transcript.final' && event.role === 'assistant')
-        this.turn?.update({ output: { text: event.content } })
+      if (
+        event.type === 'transcript.final' &&
+        event.role === 'assistant' &&
+        (!event.turnId || event.turnId === this.turn?.metadata?.turnId)
+      )
+        this.turn?.update({ output: chatMessages('assistant', event.content) })
       if (event.type === 'turn.started') {
-        this.turn?.end({ metadata: { outcome: 'next_turn' } })
-        this.turn = observation('turn', {
-          input: this.userInput || event,
-          metadata: { ...this.metadata, turnId: event.turnId || event.id },
-        })
+        const turnId = event.turnId || event.id
+        if (this.turn?.metadata?.turnId !== turnId) {
+          this.turn?.end({ metadata: { outcome: 'next_turn' } })
+          this.turnInput =
+            this.pendingInputs.get(turnId) || this.userInput || []
+          this.turn = observation('turn', {
+            root: true,
+            sessionView: true,
+            input: this.pendingInputs.get(turnId) || this.userInput || [],
+            metadata: { ...this.metadata, turnId },
+          })
+          this.userInput = null
+        }
       }
       if (
         /^(?:playback|transcript|voice|task|agent)\./.test(event.type || '') &&
@@ -254,7 +332,7 @@ export class RealtimeDiagnostics {
       )
         observation(event.type, {
           input: event,
-          parent: this.turn,
+          parent: this.turn || this.connection,
           metadata: this.metadata,
         }).end()
     } catch {}
@@ -300,25 +378,51 @@ export class RealtimeDiagnostics {
         }
       }
       const id = body.response_id || body.response?.id
-      if (direction === 'receive' && type === 'response.created' && !this.responses.has(id))
+      if (
+        direction === 'receive' &&
+        type === 'response.created' &&
+        !this.responses.has(id)
+      )
         this.responses.set(id, {
           record: observation('model.generate', {
             kind: 'generation',
             model: this.model,
-            parent: this.turn,
+            parent: this.turn || this.connection,
             metadata: { ...this.metadata, responseId: id },
-            input: {
-              configuration: this.configuration,
-              events: this.contextEvents.map((x) => x.event),
-              omittedEarlierEvents: this.omittedEvents,
-              note: 'Actual WebSocket sends; prior server-side conversation is linked through this session, not a reconstructed provider request',
-            },
+            input: displayModelInput(
+              this.configuration,
+              this.contextEvents.map((x) => x.event),
+              this.turnInput || [],
+            ),
           }),
+          text: {},
           started: this.requestedAt || this.inputFinishedAt || Date.now(),
         })
+      if (
+        direction === 'receive' &&
+        type === 'response.created' &&
+        this.responses.has(id)
+      )
+        observation('model.request', {
+          parent: this.responses.get(id).record,
+          metadata: this.metadata,
+          input: {
+            configuration: this.configuration,
+            events: this.contextEvents.map((x) => x.event),
+            omittedEarlierEvents: this.omittedEvents,
+          },
+        }).end()
       if (direction === 'receive' && type === 'response.created')
         this.requestedAt = undefined
       const response = this.responses.get(id)
+      if (
+        direction === 'receive' &&
+        response &&
+        /(?:text|audio_transcript)\.delta$/.test(type) &&
+        typeof body.delta === 'string'
+      ) {
+        response.text[type] = (response.text[type] || '') + body.delta
+      }
       if (direction === 'receive' && /delta$/.test(type)) {
         if (response && !response.firstText) {
           response.firstText = Date.now()
@@ -330,8 +434,12 @@ export class RealtimeDiagnostics {
       }
       if (direction === 'receive' && type === 'response.done' && response) {
         const u = body.response?.usage
+        observation('model.response', {
+          parent: response.record,
+          metadata: this.metadata,
+        }).end({ output: body })
         response.record.end({
-          output: body,
+          output: displayModelOutput(body, response.text),
           usage: u
             ? { input: u.input_tokens, output: u.output_tokens }
             : undefined,
@@ -346,6 +454,25 @@ export class RealtimeDiagnostics {
           },
         })
         this.responses.delete(id)
+        const output = body.response?.output || []
+        const spoken =
+          output
+            .flatMap((item) => item.content || [])
+            .map((part) => part.transcript || part.text || '')
+            .join('') ||
+          response.text['response.audio_transcript.delta'] ||
+          response.text['response.text.delta'] ||
+          ''
+        if (spoken)
+          this.turn?.update({ output: chatMessages('assistant', spoken) })
+        if (
+          !this.responses.size &&
+          (body.response?.status !== 'completed' ||
+            !output.some((item) => item.type === 'function_call'))
+        )
+          this.turn?.end({
+            metadata: { outcome: body.response?.status || 'unknown' },
+          })
         if (body.response?.output) {
           const event = {
             type: 'provider.response.output',
@@ -359,15 +486,22 @@ export class RealtimeDiagnostics {
         observation('model.' + direction, {
           input: body,
           model: this.model,
-          parent: response?.record || this.turn,
+          parent: response?.record || this.turn || this.connection,
           metadata: { ...this.metadata, success, responseId: id },
-        }).end({ error: !success ? 'SEND_FAILED' : direction === 'receive' && (type === 'error' || body.error) ? 'MODEL_PROVIDER_ERROR' : undefined })
+        }).end({
+          error: !success
+            ? 'SEND_FAILED'
+            : direction === 'receive' && (type === 'error' || body.error)
+              ? 'MODEL_PROVIDER_ERROR'
+              : undefined,
+        })
     } catch {}
   }
   close() {
     for (const { record } of this.responses.values())
       record.end({ metadata: { outcome: 'connection_closed' } })
     this.responses.clear()
+    this.connection?.end({ metadata: { inputAudioBytes: this.audioBytes } })
     this.turn?.end({
       metadata: {
         outcome: 'connection_closed',

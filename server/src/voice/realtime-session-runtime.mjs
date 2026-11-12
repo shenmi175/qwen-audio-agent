@@ -678,7 +678,7 @@ export function createRealtimeSessionRuntime({
         resultReady: false,
       })
       const toolObservation = observation('tool.'+callFields.toolName, {kind:'tool',input:event,
-        parent:diagnostics.turn,metadata:{sessionId,userId:ownerId,...callFields}})
+        parent:diagnostics.responses.get(id)?.record || diagnostics.turn,metadata:{sessionId,userId:ownerId,...callFields}})
       toolCallTimings.get(callFields.callId).observation = toolObservation
       toolObservation.run(() => toolCalls.handle(event, { ...callContext, responseId: id }))
         .catch(error => {
