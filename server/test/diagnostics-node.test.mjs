@@ -132,3 +132,12 @@ test('bounded exporter drops excess diagnostics without blocking callers', async
   assert.ok(diagnosticsHealth().pending <= 2048)
   await flushDiagnostics()
 })
+
+test('supplier errors before generation remain searchable as errors', async () => {
+ const d = new RealtimeDiagnostics({sessionId:'error-test'},'test-model')
+ d.wire('receive',{type:'error',error:{code:'authentication_failed'}})
+ await flushDiagnostics()
+ const error = spans.find(s => s.attributes['langfuse.observation.status_message'] === 'MODEL_PROVIDER_ERROR')
+ assert.ok(error)
+ assert.equal(error.status.code,2)
+})

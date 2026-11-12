@@ -361,7 +361,7 @@ export class RealtimeDiagnostics {
           model: this.model,
           parent: response?.record || this.turn,
           metadata: { ...this.metadata, success, responseId: id },
-        }).end({ error: success ? undefined : 'SEND_FAILED' })
+        }).end({ error: !success ? 'SEND_FAILED' : direction === 'receive' && (type === 'error' || body.error) ? 'MODEL_PROVIDER_ERROR' : undefined })
     } catch {}
   }
   close() {
