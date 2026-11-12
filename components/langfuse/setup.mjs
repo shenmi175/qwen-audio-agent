@@ -29,11 +29,14 @@ export function initialize({ url, bind = '127.0.0.1', certificate, key }) {
   mkdirSync(diagnostics,{recursive:true,mode:0o700})
   const auth=Buffer.from(env.LANGFUSE_INIT_PROJECT_PUBLIC_KEY+':'+env.LANGFUSE_INIT_PROJECT_SECRET_KEY).toString('base64')
   const config=resolve(diagnostics,'service.env')
-  if (!existsSync(config)) writeFileSync(config,
-    'QWEN_AUDIO_DIAGNOSTICS_PROVIDER=otlp\nOTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:3300/api/public/otel/v1/traces\n'
-    +'QWEN_AUDIO_DIAGNOSTICS_LABEL=Langfuse\nQWEN_AUDIO_DIAGNOSTICS_UI_URL='+url+'\n'
-    +'OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic%20'+auth+',x-langfuse-ingestion-version=4\n',
-    {mode:0o600,flag:'wx'})
+  if (!existsSync(config)) writeFileSync(config, [
+    'QWEN_AUDIO_DIAGNOSTICS_PROVIDER=otlp',
+    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:3300/api/public/otel/v1/traces',
+    'QWEN_AUDIO_DIAGNOSTICS_PROJECT_ID='+env.LANGFUSE_INIT_PROJECT_ID,
+    'QWEN_AUDIO_DIAGNOSTICS_LABEL=Langfuse',
+    'QWEN_AUDIO_DIAGNOSTICS_UI_URL='+url,
+    'OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic%20'+auth+',x-langfuse-ingestion-version=4',
+  ].join('\n')+'\n', {mode:0o600,flag:'wx'})
   writeFileSync(resolve(state,'login.txt'),'URL: '+url+'\nUser: '+env.LANGFUSE_INIT_USER_EMAIL
     +'\nPassword: '+env.LANGFUSE_INIT_USER_PASSWORD+'\n',{mode:0o600,flag:'wx'})
 }

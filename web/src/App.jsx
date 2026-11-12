@@ -1648,7 +1648,7 @@ export default function App() {
     </>}
     {!desktopOrbMode && webShareOpen && <WebShareDialog onClose={() => setWebShareOpen(false)} />}
     {!desktopOrbMode && webSettingsOpen && <WebPreferences
-      preferences={webPreferences} onChange={updateWebPreferences}
+      sessionId={sessionId} preferences={webPreferences} onChange={updateWebPreferences}
       onClose={() => setWebSettingsOpen(false)} modelLabel={modelLabel}
       modelSettings={modelSettings} onSelectModel={model => { setVideoCallOpen(false); updateWebPreferences({ realtimeModel: model }) }}
       modelInputModes={modelStatus.modelInputModes} backendEnabled={backend.enabled === true}

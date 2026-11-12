@@ -1,3 +1,4 @@
+import { RealtimeDiagnostics, observation } from '../../../components/diagnostics/node.mjs'
 import { randomUUID } from 'node:crypto'
 import { normalizeInputParts } from '../../../shared/input-parts.mjs'
 import { GatewayClientEvent, GatewayServerEvent } from '../../../shared/protocol/realtime-events.mjs'
@@ -82,6 +83,7 @@ export function createRealtimeSessionRuntime({
   frontendRetrieval, frontendKnowledge, frontendToolSources,
   spawnThinkingDescription, taskAnnouncementFactory,
 }) {
+  const diagnostics = new RealtimeDiagnostics({ sessionId, userId: ownerId })
   let closed = false
   let started = false
   let presentationRuntime
@@ -90,6 +92,7 @@ export function createRealtimeSessionRuntime({
     if (event.type === GatewayServerEvent.PLAYBACK_CLEAR) {
       presentationRuntime?.clearPlayback({ reason: event.reason })
     }
+    diagnostics.event(event)
     send(event)
   }
   let inputEnabled = false
@@ -234,6 +237,8 @@ export function createRealtimeSessionRuntime({
     defaultProvider: defaultRealtimeProvider,
     getAgentContext,
     getSessionOptions: () => ({
+      diagnostics: { sessionId, userId: ownerId },
+      diagnosticsRecorder: diagnostics,
       ...(sessionModel ? { model: sessionModel } : {}),
       ...(sessionOutputVoice ? { voice: sessionOutputVoice } : {}),
     }),
@@ -466,6 +471,7 @@ export function createRealtimeSessionRuntime({
       const timing = toolCallTimings.get(callId)
       if (!timing || timing.resultReady) return
       timing.resultReady = true
+      timing.observation?.end({error:failed ? errorCode || 'TOOL_FAILED' : undefined})
       connectionLogger.info('realtime.tool_call.result_ready', {
         ...timing.fields,
         turnId: turnId || timing.fields.turnId,
@@ -671,8 +677,12 @@ export function createRealtimeSessionRuntime({
         startedAt,
         resultReady: false,
       })
-      toolCalls.handle(event, { ...callContext, responseId: id })
+      const toolObservation = observation('tool.'+callFields.toolName, {kind:'tool',input:event,
+        parent:diagnostics.turn,metadata:{sessionId,userId:ownerId,...callFields}})
+      toolCallTimings.get(callFields.callId).observation = toolObservation
+      toolObservation.run(() => toolCalls.handle(event, { ...callContext, responseId: id }))
         .catch(error => {
+          toolObservation.update({error:error.code || error.name})
           connectionLogger.warn('realtime.tool_call.failed', {
             ...callFields,
             durationMs: Math.max(0, Date.now() - startedAt),
@@ -680,7 +690,7 @@ export function createRealtimeSessionRuntime({
           })
           emit({ type: 'error', message: error.message })
         })
-        .finally(() => toolCallTimings.delete(callFields.callId))
+        .finally(() => {toolObservation.end();toolCallTimings.delete(callFields.callId)})
     } else if (presentationRuntime.handle(event)) {
       // Alternative transports distinguish generation from audio delivery.
       // Existing client events stay unchanged.
@@ -947,6 +957,7 @@ export function createRealtimeSessionRuntime({
 
   const handleClientEvent = (event, { descriptor: nextDescriptor = descriptor, capabilities: negotiatedCapabilities = [], capabilitiesNegotiated = false } = {}) => {
     if (closed) return
+    diagnostics.event(event)
     if ([
       GatewayClientEvent.TEXT_MESSAGE,
       GatewayClientEvent.INPUT_MESSAGE,
@@ -1291,6 +1302,7 @@ export function createRealtimeSessionRuntime({
     },
     close() {
       if (closed) return
+      diagnostics.close()
       closed = true
       connectionIdle.close()
       toolScope.abort(new Error('Client disconnected'))

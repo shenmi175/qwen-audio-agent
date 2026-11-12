@@ -5,7 +5,7 @@ import { memoryCapability } from './memory-capability.mjs'
 
 const categories = [['models', '模型与对话'], ['memory', '记忆与诊断'], ['appearance', '界面外观'], ['connection', '连接与隐私']]
 
-export default function WebPreferences({ preferences, onChange, onClose, modelLabel,
+export default function WebPreferences({ sessionId, preferences, onChange, onClose, modelLabel,
   modelInputModes = [], modelSettings = {}, onSelectModel, backendEnabled, knowledgeConfigured, onOpenLibrary, onNewSession,
   connected, microphoneEnabled, microphoneLabel, onToggleConnection, onToggleMicrophone,
   onShare, videoSupported, videoOpen, onToggleVideo, statusText, memoryStatus, memoryLearning, realtimeIdleTimeoutMs }) {
@@ -129,11 +129,15 @@ export default function WebPreferences({ preferences, onChange, onClose, modelLa
             <dl className="web-capabilities">
               <div><dt>{t('后台记忆输入输出')}</dt><dd>{recording ? t('已接入') : t('未启用或暂不可用')}</dd></div>
               <div><dt>{t('记忆工具、Token 与耗时')}</dt><dd>{recording ? t('已接入') : '—'}</dd></div>
-              <div><dt>{t('实时语音模型输入输出')}</dt><dd>{t('尚未接入')}</dd></div>
-              <div><dt>{t('对话搜索完整链路')}</dt><dd>{t('尚未接入')}</dd></div>
+              <div><dt>{t('实时语音模型输入输出')}</dt><dd>{diagnostics?.runtime?.enabled ? t('已接入') : t('尚未接入')}</dd></div>
+              <div><dt>{t('对话搜索完整链路')}</dt><dd>{diagnostics?.runtime?.enabled ? t('已接入') : t('尚未接入')}</dd></div>
             </dl>
+            {diagnostics?.runtime?.errorCode && <p className="web-settings-hint">{diagnostics.runtime.errorCode}</p>}
+            <p className="web-settings-hint">{t('最近成功上报')}：{diagnostics?.runtime?.lastSuccess || '—'} · {t('丢弃记录')}：{diagnostics?.runtime?.dropped ?? 0}</p>
             {diagnostics?.url ? <a className="web-settings-link-button" href={diagnostics.url} target="_blank" rel="noopener noreferrer">{t('打开诊断控制台')} ↗</a>
               : <p className="web-settings-hint">{t('尚未配置诊断控制台入口。')}</p>}
+            {diagnostics?.url && diagnostics?.projectId && sessionId && <a className="web-settings-link-button" target="_blank" rel="noopener noreferrer"
+              href={new URL('project/'+encodeURIComponent(diagnostics.projectId)+'/sessions/'+encodeURIComponent(sessionId),diagnostics.url).href}>{t('查看当前会话诊断')} ↗</a>}
             <p className="web-settings-hint">{t('控制台需要单独登录。只记录接入后的请求，旧对话没有完整模型输入输出。')}</p>
           </section>
         </>}

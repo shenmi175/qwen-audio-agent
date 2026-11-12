@@ -1,3 +1,4 @@
+import { RealtimeDiagnostics } from '../../../components/diagnostics/node.mjs'
 import WebSocket from 'ws'
 import { randomUUID } from 'node:crypto'
 import {
@@ -150,7 +151,10 @@ export class RealtimeFrontend {
     this.onDiagnostic = onDiagnostic
     this.onResponseSettled = onResponseSettled
     this.agentContext = agentContext
-    this.sessionOptions = sessionOptions
+    const { diagnosticsRecorder, diagnostics: diagnosticMetadata, ...providerOptions } = sessionOptions
+    this.sessionOptions = providerOptions
+    this.diagnostics = (diagnosticsRecorder || new RealtimeDiagnostics(diagnosticMetadata, provider.model?.()))
+    this.diagnostics.model = provider.model?.()
     this.ws = null
     this.ready = false
     this.sessionConfigured = false
@@ -197,6 +201,7 @@ export class RealtimeFrontend {
   }
 
   diagnose(event) {
+    this.diagnostics?.event({...event,type:'voice.diagnostic',eventType:event.event})
     try { this.onDiagnostic?.(event) } catch { /* Logging is not control flow. */ }
   }
 
@@ -216,7 +221,9 @@ export class RealtimeFrontend {
       return Promise.reject(error)
     }
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.provider.url(), {
+      const url = this.provider.url()
+      try { this.diagnostics.region = new URL(url).hostname === 'dashscope.aliyuncs.com' ? 'beijing' : 'unknown' } catch { this.diagnostics.region = 'unknown' }
+      const ws = new WebSocket(url, {
         headers: this.provider.headers(),
       })
       this.ws = ws
@@ -301,9 +308,9 @@ export class RealtimeFrontend {
   }
 
   handleProviderEvent(providerEvent, { onSessionReady, onSessionError } = {}) {
-    const events = normalizedEvents(
-      this.protocol.normalizeIncoming(providerEvent),
-    )
+    let events
+    try { events = normalizedEvents(this.protocol.normalizeIncoming(providerEvent)) }
+    catch (error) { this.diagnostics.wire('receive', providerEvent); throw error }
     for (const event of events) {
       if (event.type === 'error' && this.restoringContext) {
         event.__voiceOrigin = 'restore'
@@ -311,6 +318,7 @@ export class RealtimeFrontend {
       if (event.type === 'error' && !this.sessionConfigured) {
         const error = new Error(realtimeEventErrorMessage(event))
         error.realtimeEvent = true
+        this.diagnostics.wire('receive', providerEvent)
         throw error
       }
       if (event.type === 'session.created') {
@@ -325,6 +333,7 @@ export class RealtimeFrontend {
       this.handleLifecycle(event)
       this.onEvent?.(event)
     }
+    this.diagnostics.wire('receive', providerEvent)
     return events
   }
 
@@ -1225,6 +1234,7 @@ export class RealtimeFrontend {
   }
 
   close() {
+    this.diagnostics.close()
     if (this.ws?.readyState === WebSocket.OPEN && this.protocol.sessionClose) {
       this.send(this.protocol.sessionClose('client_closed'))
     }
@@ -1237,7 +1247,7 @@ export class RealtimeFrontend {
   }
 
   sendWireMessage(body, options = {}) {
-    return sendBoundedWebSocket(this.ws, JSON.stringify(body), {
+    const accepted = sendBoundedWebSocket(this.ws, JSON.stringify(body), {
       ...options,
       onFailure: ({ code, bufferedBytes, messageBytes, limit }) => {
         this.ready = false
@@ -1248,6 +1258,8 @@ export class RealtimeFrontend {
         })
       },
     })
+    this.diagnostics.wire('send', body, accepted)
+    return accepted
   }
 
   send(payload, options = {}) {

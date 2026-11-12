@@ -1,4 +1,7 @@
 const translations = {
+  '查看当前会话诊断': 'View diagnostics for this conversation',
+  '最近成功上报': 'Last successful export',
+  '丢弃记录': 'Dropped observations',
   '模型已生效。': 'The model is active.',
   '此模型需要专属业务空间服务地址，未配置时连接会失败。': 'This model requires a workspace-specific endpoint. Connection fails if it is not configured.',
   "模型与对话": "Model & conversation",

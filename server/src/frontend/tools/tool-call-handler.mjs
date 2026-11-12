@@ -1,3 +1,4 @@
+import { observation } from '../../../../components/diagnostics/node.mjs'
 import {
   CANCEL_AGENT_TASK_TOOL_NAME,
   RESPOND_PERMISSION_TOOL_NAME,
@@ -289,6 +290,7 @@ export class ToolCallHandler {
   }
 
   async sendOutput(callId, output, turnId, taskId, options) {
+    observation('tool.result',{input:{callId,turnId,taskId},metadata:{sessionId:this.sessionId,userId:this.ownerId,callId,turnId,taskId}}).end({output})
     const {
       responseContext,
       ...frontendOptions

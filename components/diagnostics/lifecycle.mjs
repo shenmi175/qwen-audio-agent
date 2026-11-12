@@ -33,6 +33,7 @@ export function diagnosticsPublicStatus(env = { ...process.env, ...diagnosticsEn
     enabled: env.QWEN_AUDIO_DIAGNOSTICS_PROVIDER === 'otlp',
     label: String(env.QWEN_AUDIO_DIAGNOSTICS_LABEL || 'OTLP').slice(0, 80),
     url,
+    projectId: env.QWEN_AUDIO_DIAGNOSTICS_PROJECT_ID || null,
     coverage: { backgroundMemory: true, realtime: false, conversationSearch: false },
   }
 }

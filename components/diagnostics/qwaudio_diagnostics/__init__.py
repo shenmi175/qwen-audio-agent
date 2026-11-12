@@ -9,7 +9,7 @@ from contextlib import contextmanager
 _metadata = contextvars.ContextVar("qwaudio_diagnostic_metadata", default={})
 _recorder = None
 _SECRET_KEYS = {"authorization", "api_key", "apikey", "password", "secret", "access_token", "refresh_token"}
-_ALLOWED_METADATA = {"session_id", "user_id", "task_id", "version", "generation", "operation_id", "schema"}
+_ALLOWED_METADATA = {"session_id", "user_id", "task_id", "version", "generation", "operation_id", "schema", "source_trace_id", "batch_id", "turn_id", "connection_id", "response_id", "call_id"}
 
 def redact(value):
     secrets = [v for k,v in os.environ.items()

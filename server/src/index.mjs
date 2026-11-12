@@ -1,3 +1,4 @@
+import { initializeDiagnostics, flushDiagnostics } from '../../components/diagnostics/node.mjs'
 import { dirname, resolve } from 'node:path'
 import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +14,7 @@ import { ensureGraphitiComponent } from '../../components/graphiti/lifecycle.mjs
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const root = process.env.QWEN_AUDIO_AGENT_RUNTIME_ROOT || sourceRoot
 const runtimeEnvironment = loadRuntimeEnvironment({ root })
+initializeDiagnostics()
 // Foreground CLI, launchd/systemd and Electron all resolve user-installed
 // backends and stdio MCP servers from the same persisted login-shell PATH.
 expandProcessPath({ env: process.env, refreshCache: false })
@@ -122,7 +124,7 @@ try {
   })
   const gatewayApplication = await import('./app/bootstrap.mjs')
   const { server } = gatewayApplication
-  closeGatewayApplication = gatewayApplication.close
+  closeGatewayApplication = async () => { await gatewayApplication.close(); await flushDiagnostics() }
   if (!server.listening) await once(server, 'listening')
   const address = server.address()
   const port = address && typeof address === 'object'

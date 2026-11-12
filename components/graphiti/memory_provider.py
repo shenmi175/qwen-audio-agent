@@ -125,7 +125,8 @@ class GraphitiProvider:
         if not self.enabled:
             return {'status': 'disabled', 'code': 'GRAPHITI_DISABLED'}
         job = self.queue.submit(memory_group(user_id), conversation_id, event_id, 'observe',
-            {'content': text, 'connection_id': connection_id, 'end_reason': end_reason})
+            {'content': text, 'connection_id': connection_id, 'end_reason': end_reason,
+             'diagnostic_context': kwargs.get('diagnostic_context', {})})
         self.start()
         self._emit('queued', task_id=job['id'], version=job['version'])
         return job
@@ -629,7 +630,10 @@ class GraphitiProvider:
             job = self.queue.claim(owner)
             if not job:
                 return False
+            source_context = json.loads(job['payload'] or '{}').get('diagnostic_context', {})
             with self.diagnostics.span('memory.job',metadata={
+                    'source_trace_id': source_context.get('traceparent', '').split('-')[1] if source_context.get('traceparent', '').count('-') == 3 else '',
+                    'batch_id': job['event'],
                     'user_id':owner,'session_id':job['session'],'task_id':job['id'],
                     'version':job['version'],'generation':job['generation']}) as observation:
                 started = time.monotonic()

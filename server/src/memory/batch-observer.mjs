@@ -1,3 +1,4 @@
+import { observation } from '../../../components/diagnostics/node.mjs'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -91,8 +92,9 @@ export class MemoryBatchObserver {
         this.seal(s, 'process-recovery')
       }
       for (const batch of this.db.prepare('SELECT * FROM batches ORDER BY rowid').all()) {
-        await this.memoryService.observe(batch.owner, { messages: JSON.parse(batch.payload) },
-          { source: 'background-batch', sessionId: batch.session, batchId: batch.id, connectionId: batch.id, endReason: batch.end_reason })
+        const diagnostic = observation('memory.batch',{root:true,metadata:{sessionId:batch.session,userId:batch.owner,batchId:batch.id}})
+        await Promise.resolve().then(() => diagnostic.run(() => this.memoryService.observe(batch.owner, { messages: JSON.parse(batch.payload) },
+          { source: 'background-batch', sessionId: batch.session, batchId: batch.id, connectionId: batch.id, endReason: batch.end_reason }))).then(() => diagnostic.end(), error => {diagnostic.end({error:error.code || error.name});throw error})
         this.db.prepare('DELETE FROM batches WHERE id=?').run(batch.id)
         this.logger?.info('memory.batch_accepted', { batchId: batch.id })
       }

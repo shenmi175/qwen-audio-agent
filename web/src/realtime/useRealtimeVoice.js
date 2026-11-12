@@ -368,11 +368,13 @@ export default function useRealtimeVoice({
     }
   }, [holdManualInputGuard, sendSocketEvent])
 
+  const playbackTimes = useRef(new Map())
   const sendPlaybackEvent = useCallback((type, responseId, reason = '') => {
     if (responseId) {
       sendSocketEvent({
         type,
         responseId,
+        ...(playbackTimes.current.has(responseId) ? { elapsedSinceFirstAudioMs: Math.max(0, performance.now() - playbackTimes.current.get(responseId)) } : {}),
         ...(reason ? { reason } : {}),
       })
     }
@@ -520,6 +522,10 @@ export default function useRealtimeVoice({
     sampleRate = OUTPUT_RATE,
     responseId = '',
   }) => {
+    if (responseId && !playbackTimes.current.has(responseId)) {
+      if (playbackTimes.current.size >= 256) playbackTimes.current.delete(playbackTimes.current.keys().next().value)
+      playbackTimes.current.set(responseId, performance.now())
+    }
     const context = audioRef.current
     if (!context) {
       failPlayback(responseId, t('语音播放尚未启用'))

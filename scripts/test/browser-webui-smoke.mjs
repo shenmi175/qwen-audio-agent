@@ -488,7 +488,7 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
       backend: { enabled: false, status: 'not_configured' },
     }),
   }))
-  if (settingsProfiles) {
+  {
     const data = {
       '/api/components/graphiti': { ready: true, diagnostics: { enabled: true }, agentModel: 'background-agent', graphModel: 'background-extraction' },
       '/api/memory/status': { runtime: { pending_tasks: 0 } },
@@ -500,6 +500,9 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
   await page.goto(new URL(path, pageBaseUrl).href, { waitUntil: 'domcontentloaded' })
   if (process.env.QWEN_BROWSER_SMOKE_INJECT_ERROR === '1') {
     await page.evaluate(() => { setTimeout(() => { throw new Error('smoke diagnostic probe') }, 0) })
+  }
+  if (/browser-smoke=(happy|language|reconnect|track-ended|deny-microphone|real-audio|video-call[^&]*)(?:&|$)/.test(path)) {
+    await page.getByRole('button', { name:'设置', exact:true }).click()
   }
   return page
 }
@@ -707,6 +710,14 @@ async function testDesktopAudioWorklet(context, diagnostics) {
   }
 }
 
+async function clickMicrophoneControl(page, name) {
+  const control = page.getByRole('button', { name, exact:true })
+  const opened = !await control.isVisible()
+  if (opened) await page.getByRole('button', { name:'设置', exact:true }).click()
+  await control.click()
+  if (opened) await page.getByRole('button', { name:'关闭设置', exact:true }).click()
+}
+
 async function testVideoCall(context, diagnostics) {
   const page = await preparePage(context, '?browser-smoke=video-call', diagnostics)
   await page.setViewportSize({ width: 1280, height: 900 })
@@ -722,7 +733,7 @@ async function testVideoCall(context, diagnostics) {
   await waitForAttribute(page, 'data-visual-input-state', value => value === 'active')
   assert.equal(await html.getAttribute('data-audio-appends'), null, 'Video must not start the microphone')
   assert.equal(await html.getAttribute('data-media-requests'), '1', 'Video requests only camera permission')
-  await page.getByRole('button', { name: '开启麦克风', exact: true }).click()
+  await clickMicrophoneControl(page, '开启麦克风')
   await waitForAttribute(page, 'data-non-silent-audio-appends', v => Number(v) > 0)
   await page.getByRole('button', { name: '关闭摄像头', exact: true }).click()
   await waitForAttribute(page, 'data-camera-stops', v => Number(v) === 1)
@@ -738,13 +749,13 @@ async function testVideoCall(context, diagnostics) {
   await waitForAttribute(page, 'data-visual-input-state', value => value === 'active')
   const stateEvents = Number(await html.getAttribute('data-visual-state-events'))
   assert.equal(await html.getAttribute('data-camera-requests'), '2')
-  await page.getByRole('button', { name: '麦克风静音', exact: true }).click()
+  await clickMicrophoneControl(page, '麦克风静音')
   await waitForAttribute(page, 'data-track-stops', v => Number(v) === 1)
   const muted = Number(await html.getAttribute('data-image-appends'))
   await waitForAttribute(page, 'data-image-appends', v => Number(v) > muted)
   assert.equal(Number(await html.getAttribute('data-visual-state-events')), stateEvents,
     'Frames, renders and microphone mute must not republish unchanged visual state')
-  await page.getByRole('button', { name: '开启麦克风', exact: true }).click()
+  await clickMicrophoneControl(page, '开启麦克风')
   // A responsive-layout switch and a reconnect must not reacquire the camera.
   await page.setViewportSize({ width: 1600, height: 1000 })
   await page.locator('.camera-stream-docked video').waitFor()
@@ -756,10 +767,11 @@ async function testVideoCall(context, diagnostics) {
   await waitForAttribute(page, 'data-image-appends', v => Number(v) > reconnected)
   await waitForAttribute(page, 'data-visual-input-state', value => value === 'active')
   assert.equal(await html.getAttribute('data-camera-requests'), '2')
-  await page.getByRole('button', { name: '关闭视频', exact: true }).click()
+  await page.getByRole('button', { name: '关闭视频，保留语音', exact: true }).click()
   await page.getByRole('region', { name: '视频通话', exact: true }).waitFor({ state: 'detached' })
   await waitForAttribute(page, 'data-camera-stops', v => Number(v) === 2)
   await waitForAttribute(page, 'data-visual-input-state', value => value === 'inactive')
+  await page.getByRole('button', { name:'设置', exact:true }).click()
   await page.getByRole('button', { name: '开启视频', exact: true }).waitFor()
   assert.equal(await html.getAttribute('data-track-stops'), '1', 'Closing video must not mute the microphone')
   const stopped = Number(await html.getAttribute('data-image-appends'))

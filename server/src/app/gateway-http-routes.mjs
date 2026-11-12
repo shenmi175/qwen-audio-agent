@@ -1,3 +1,4 @@
+import { diagnosticsHealth } from '../../../components/diagnostics/node.mjs'
 import express from 'express'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
@@ -247,7 +248,7 @@ export function registerGatewayHttpRoutes(app, {
   })
 
   app.get('/api/diagnostics/status', (_req, res) => {
-    res.set('Cache-Control', 'no-store').json(diagnosticsPublicStatus())
+    res.set('Cache-Control', 'no-store').json({ ...diagnosticsPublicStatus(), runtime: diagnosticsHealth(), coverage: { backgroundMemory:true, realtime:true, conversationSearch:true, playback:true } })
   })
 
   app.get('/api/components/graphiti', async (_req, res) => {

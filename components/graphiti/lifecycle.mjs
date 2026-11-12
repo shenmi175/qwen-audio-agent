@@ -1,3 +1,4 @@
+import { diagnosticCarrier } from '../diagnostics/node.mjs'
 import { diagnosticsEnvironment, diagnosticsConfigurationFingerprint } from '../diagnostics/lifecycle.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
@@ -146,7 +147,7 @@ export async function stopGraphitiComponent() {
 // Only this server-side transport reads the private component token.
 export async function graphitiComponentRequest(path, payload) {
   const response = await fetch(`${origin()}${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json',
+    method: 'POST', headers: { ...diagnosticCarrier(), 'content-type': 'application/json',
       authorization: `Bearer ${localSecrets().GRAPHITI_COMPONENT_TOKEN}` },
     body: JSON.stringify(payload), signal: AbortSignal.timeout(11000),
   })

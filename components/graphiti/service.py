@@ -8,11 +8,13 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from memory_provider import GraphitiProvider, memory_group, INTEGRATION_FINGERPRINT
 from memory_queue import MemoryErrorCode
+
+from qwaudio_diagnostics import remote_context
 
 memory = None
 
@@ -103,14 +105,16 @@ async def status(body: Body):
 
 
 @app.post('/memory/query', dependencies=[Depends(authenticate)])
-async def query(body: Query):
-    return await memory.query(body.query, user_id=body.owner_id, required_version=body.required_version, conversation_id=body.session_id)
+async def query(body: Query, request: Request):
+    with remote_context(dict(request.headers)):
+        return await memory.query(body.query, user_id=body.owner_id, required_version=body.required_version, conversation_id=body.session_id)
 
 
 @app.post('/memory/observe', dependencies=[Depends(authenticate)], status_code=202)
-async def observe(body: Observe):
+async def observe(body: Observe, request: Request):
     return await memory.observe(body.text, user_id=body.owner_id, conversation_id=body.session_id, event_id=body.event_id,
-        connection_id=body.connection_id, end_reason=body.end_reason)
+        connection_id=body.connection_id, end_reason=body.end_reason,
+        diagnostic_context={k:v for k,v in request.headers.items() if k in ('traceparent','tracestate')})
 
 
 @app.post('/memory/apply', dependencies=[Depends(authenticate)], status_code=202)
