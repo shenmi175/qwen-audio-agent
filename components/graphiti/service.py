@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from memory_provider import GraphitiProvider, memory_group, INTEGRATION_FINGERPRINT
 from memory_queue import MemoryErrorCode
-from memory_tiers import TIERS, tier_model
+from memory_tiers import TIERS, tier_model, _tier_file
 
 from qwaudio_diagnostics import remote_context
 
@@ -116,6 +116,10 @@ async def memory_settings():
 async def update_memory_settings(body: MemorySettings):
     memory.tier = body.tier
     memory.model = tier_model(body.tier)
+    path = _tier_file()
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body.tier + '\n')
     return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS)}
 
 

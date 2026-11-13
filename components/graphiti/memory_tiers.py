@@ -4,6 +4,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from dataclasses import dataclass
 from memory_queue import MemoryErrorCode
 
@@ -18,8 +19,22 @@ class MemoryPrompt:
     content: str
     source: str = "langfuse"
 
+def _tier_file():
+    configured = os.environ.get("GRAPHITI_MEMORY_TIER_FILE")
+    if configured:
+        return Path(configured)
+    queue = os.environ.get("GRAPHITI_QUEUE_PATH")
+    return Path(queue).with_name("memory_tier") if queue else None
+
 def selected_tier():
-    value = os.environ.get("GRAPHITI_MEMORY_TIER", DEFAULT_TIER).strip().lower()
+    value = os.environ.get("GRAPHITI_MEMORY_TIER", "").strip().lower()
+    if not value:
+        path = _tier_file()
+        try:
+            value = path.read_text().strip().lower() if path else ""
+        except OSError:
+            value = ""
+    value = value or DEFAULT_TIER
     if value not in TIERS:
         raise MemoryErrorCode("MEMORY_INVALID_TIER")
     return value
