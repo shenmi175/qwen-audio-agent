@@ -10,6 +10,7 @@ import { acquireGatewayLease } from '../../shared/gateway/lease.mjs'
 import { assertGatewaySetup } from '../../shared/gateway/setup.mjs'
 import { startManagedBackend } from './process/managed-backend.mjs'
 import { ensureGraphitiComponent } from '../../components/graphiti/lifecycle.mjs'
+import { initializeFrontendPrompt } from './conversation/frontend-agent-context.mjs'
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const root = process.env.QWEN_AUDIO_AGENT_RUNTIME_ROOT || sourceRoot
@@ -87,6 +88,12 @@ try {
     logger.warn('skills.backfill_failed', { error })
   }
   await ensureGraphitiComponent({ logger })
+  try {
+    const prompt = await initializeFrontendPrompt()
+    logger.info('frontend.prompt_loaded', prompt)
+  } catch (error) {
+    logger.warn('frontend.prompt_load_failed', { code: error.message })
+  }
   backendRuntime = await startManagedBackend({ root, logger })
   const managedBackend = backendRuntime.child
   const onManagedBackendExit = (code, signal) => {

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { Buffer } from 'node:buffer'
 import { resolve } from 'node:path'
 import { config } from '../core/config.mjs'
 import { recentConversationMessages } from '../../../shared/conversation-history.mjs'
@@ -8,6 +9,40 @@ const ASSISTANT_FILE = 'ASSISTANT.md'
 const MAX_PROMPT_CHARS = 16000
 const MAX_ASSISTANT_CHARS = 4000
 const MAX_RECENT_CHARS = 3500
+let langfusePrompt = ''
+let langfusePromptMeta = null
+
+
+function langfuseEnv() {
+  try {
+    const path = resolve(config.frontendPromptDir, '../../runtime/components/langfuse/service.env')
+    const values = Object.fromEntries(readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean).map(line => {
+      const index = line.indexOf('=')
+      return [line.slice(0, index), line.slice(index + 1)]
+    }))
+    return values
+  } catch { return {} }
+}
+
+export async function initializeFrontendPrompt() {
+  const env = langfuseEnv()
+  const base = String(process.env.LANGFUSE_BASE_URL || env.NEXTAUTH_URL || 'http://127.0.0.1:3300').replace(/\/$/, '')
+  const publicKey = process.env.LANGFUSE_PUBLIC_KEY || env.LANGFUSE_INIT_PROJECT_PUBLIC_KEY || ''
+  const secretKey = process.env.LANGFUSE_SECRET_KEY || env.LANGFUSE_INIT_PROJECT_SECRET_KEY || ''
+  if (!publicKey || !secretKey) throw new Error('LANGFUSE_PROMPT_CREDENTIALS_MISSING')
+  const response = await fetch(`${base}/api/public/v2/prompts/frontend%2Fassistant-behavior?label=production`, {
+    headers: { authorization: `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString('base64')}` },
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!response.ok) throw new Error(`LANGFUSE_PROMPT_${response.status}`)
+  const value = await response.json()
+  if (typeof value.prompt !== 'string' || !value.prompt.trim()) throw new Error('LANGFUSE_PROMPT_INVALID')
+  langfusePrompt = value.prompt.trim().slice(0, MAX_PROMPT_CHARS)
+  langfusePromptMeta = { name: value.name, version: value.version, source: 'langfuse' }
+  return langfusePromptMeta
+}
+
+export function frontendPromptStatus() { return langfusePromptMeta }
 
 function clean(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
@@ -62,10 +97,8 @@ export function currentTimeSnapshot({
 }
 
 export function loadFrontendPrompt() {
-  const content = readFileSync(
-    resolve(config.frontendPromptDir, PROMPT_FILE),
-    'utf8',
-  ).trim()
+  if (langfusePrompt) return langfusePrompt
+  const content = readFileSync(resolve(config.frontendPromptDir, PROMPT_FILE), 'utf8').trim()
   if (!content) throw new Error(`${PROMPT_FILE} must not be empty`)
   return [...content].slice(0, MAX_PROMPT_CHARS).join('')
 }
