@@ -58,7 +58,7 @@ class GraphitiProvider:
         self.mcp = mcp or OfficialMCP(telemetry=self.telemetry)
         self.llm = AsyncOpenAI(api_key=api_key or load_qwen_key(), base_url=self.config['base_url'], max_retries=0, timeout=60)
         self.tier = selected_tier()
-        self.model = os.environ.get('GRAPHITI_AGENT_MODEL', tier_model(self.tier))
+        self.model = tier_model(self.tier)
         self.error = None
         self._runner = None
         self._initialized = False
