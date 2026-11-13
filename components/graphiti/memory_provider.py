@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from qwaudio_diagnostics import get_recorder
 from component_config import graphiti_settings, load_qwen_key
 from memory_queue import MemoryQueue, MemoryErrorCode
-from memory_policy import MEMORY_OBSERVATION_PROMPT
+from memory_tiers import selected_tier, tier_model, fetch_prompt
 from official_mcp import OfficialMCP, COMMIT, VERSION, upstream_error_code
 
 MEMORY_POLICY_FILE_SHA = hashlib.sha256(Path(__file__).with_name('memory_policy.py').read_bytes()).hexdigest()
@@ -57,7 +57,8 @@ class GraphitiProvider:
         self.queue = MemoryQueue(queue_path or self.config['queue_path'])
         self.mcp = mcp or OfficialMCP(telemetry=self.telemetry)
         self.llm = AsyncOpenAI(api_key=api_key or load_qwen_key(), base_url=self.config['base_url'], max_retries=0, timeout=60)
-        self.model = os.environ.get('GRAPHITI_AGENT_MODEL', self.config['llm_model'])
+        self.tier = selected_tier()
+        self.model = os.environ.get('GRAPHITI_AGENT_MODEL', tier_model(self.tier))
         self.error = None
         self._runner = None
         self._initialized = False
@@ -97,10 +98,10 @@ class GraphitiProvider:
             rows = c.execute("SELECT o.state,count(*) n FROM mcp_operations o JOIN jobs j ON j.id=o.job WHERE j.owner=? GROUP BY o.state",
                              (memory_group(user_id),)).fetchall()
         return {**state, 'diagnostics':self.diagnostics.health(), 'provider': 'graphiti', 'transport': 'official-mcp', 'available': self.enabled and self._initialized,
-            'mcp_version': VERSION, 'mcp_commit': COMMIT, 'agent_model': self.model,
+            'mcp_version': VERSION, 'mcp_commit': COMMIT, 'agent_model': self.model, 'memory_tier': self.tier, 'prompt_source': 'langfuse',
             'graph_model': self.config['llm_model'], 'structured_output':'qwen-forced-function', 'embedding_model': self.config['embedding_model'],
             'trigger': 'connection-close', 'operations': {r['state']:r['n'] for r in rows},
-            'policy_source': 'components/graphiti/memory_policy.py', 'policy_sha256': MEMORY_POLICY_FILE_SHA,
+            'policy_source': 'langfuse:production', 'policy_sha256': MEMORY_POLICY_FILE_SHA,
             'error_code': state.get('error_code') or self.error}
 
     def list(self, **kwargs):
@@ -427,8 +428,13 @@ class GraphitiProvider:
             return {'action':'none', 'reason':'retired_source'}
         with self.queue.connect() as c:
             run = c.execute('SELECT * FROM mcp_runs WHERE job=?', (job['id'],)).fetchone()
-        history = json.loads(run['messages']) if run else [
-            {'role':'system','content':MEMORY_OBSERVATION_PROMPT},
+        if run:
+            history = json.loads(run['messages'])
+        else:
+            prompt_record = fetch_prompt(self.tier)
+            self._emit('prompt_loaded', task_id=job['id'], tier=self.tier, prompt_name=prompt_record.name, prompt_version=prompt_record.version)
+            history = [
+            {'role':'system','content':prompt_record.content},
             {'role':'user','content':json.dumps({'task_id':job['id'], 'session_id':job['session'],
                 'message_count':len(source), 'instruction':'读取本任务的完整对话后，检索并维护合格记忆。所有执行结果只做后台记录。'}, ensure_ascii=False)}]
         step = run['step'] if run else 0

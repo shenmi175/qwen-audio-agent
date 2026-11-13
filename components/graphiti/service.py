@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from memory_provider import GraphitiProvider, memory_group, INTEGRATION_FINGERPRINT
 from memory_queue import MemoryErrorCode
+from memory_tiers import TIERS, tier_model
 
 from qwaudio_diagnostics import remote_context
 
@@ -68,6 +69,10 @@ class Body(BaseModel):
     model_config = ConfigDict(extra='forbid')
     owner_id: str = Field(min_length=1, max_length=128)
 
+class MemorySettings(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    tier: Literal['light', 'medium', 'advanced'] = 'medium'
+
 
 class Query(Body):
     query: str = Field(min_length=1, max_length=12000)
@@ -102,6 +107,16 @@ class Wait(Body):
 @app.post('/memory/status', dependencies=[Depends(authenticate)])
 async def status(body: Body):
     return memory.status(user_id=body.owner_id)
+
+@app.get('/memory/settings', dependencies=[Depends(authenticate)])
+async def memory_settings():
+    return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS), 'default_tier': 'medium'}
+
+@app.put('/memory/settings', dependencies=[Depends(authenticate)])
+async def update_memory_settings(body: MemorySettings):
+    memory.tier = body.tier
+    memory.model = tier_model(body.tier)
+    return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS)}
 
 
 @app.post('/memory/query', dependencies=[Depends(authenticate)])
