@@ -72,6 +72,7 @@ class Body(BaseModel):
 class MemorySettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     tier: Literal['light', 'medium', 'advanced'] = 'medium'
+    owner_id: str | None = None
 
 
 class Query(Body):
