@@ -26,7 +26,7 @@ function langfuseEnv() {
 
 export async function initializeFrontendPrompt() {
   const env = langfuseEnv()
-  const base = String(process.env.LANGFUSE_BASE_URL ||  || 'http://127.0.0.1:3300').replace(/\/$/, '')
+  const base = String(process.env.LANGFUSE_BASE_URL || 'http://127.0.0.1:3300').replace(/\/$/, '')
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY || env.LANGFUSE_INIT_PROJECT_PUBLIC_KEY || ''
   const secretKey = process.env.LANGFUSE_SECRET_KEY || env.LANGFUSE_INIT_PROJECT_SECRET_KEY || ''
   if (!publicKey || !secretKey) throw new Error('LANGFUSE_PROMPT_CREDENTIALS_MISSING')
