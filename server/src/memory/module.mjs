@@ -1,3 +1,4 @@
+import { frontendPromptStatus } from '../conversation/frontend-agent-context.mjs'
 import { MemoryBatchObserver } from './batch-observer.mjs'
 import { dirname, join } from 'node:path'
 import { FrontendMemoryRuntime } from './runtime.mjs'
@@ -106,6 +107,7 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
     },
     mountRoutes(app) {
       app.get('/api/memory/status', (_req, res) => res.json({
+        frontendPrompts: frontendPromptStatus(),
         provider: config.memoryProvider,
         scope: config.memoryScope || 'user',
         automaticExtraction: Boolean(memoryExtractor?.enabled()),

@@ -4,7 +4,7 @@ import { normalizeInputParts } from '../../../shared/input-parts.mjs'
 import { GatewayClientEvent, GatewayServerEvent } from '../../../shared/protocol/realtime-events.mjs'
 import { GatewayClientCapability } from '../../../shared/protocol/gateway-client-protocol.mjs'
 import { AnnouncementWindow } from './announcement/announcement-window.mjs'
-import { normalizeClientContext } from '../conversation/frontend-agent-context.mjs'
+import { normalizeClientContext, subscribeFrontendPrompts } from '../conversation/frontend-agent-context.mjs'
 import { realtimeEventErrorMessage } from './realtime-provider.mjs'
 import { SessionTaskCoordinator } from '../orchestration/session-task-coordinator.mjs'
 import { createRealtimeTaskPresentation } from './realtime-task-presentation.mjs'
@@ -411,6 +411,10 @@ export function createRealtimeSessionRuntime({
   // the owner's live memory snapshot after persistence, including deletion.
   // Same-session tool writes already return the new documents to the model;
   // retain their existing cache-only path to avoid a redundant prompt update.
+  const unsubscribePrompts = subscribeFrontendPrompts(status => {
+    realtimeSession.updateAgentContext({}, { refreshSession: true })
+    connectionLogger.info('frontend.prompt_refresh_scheduled', status)
+  })
   const unsubscribeMemory = typeof memoryService?.subscribe === 'function'
     ? memoryService.subscribe(event => {
         if (!(memoryService.sharesOwner?.(event.ownerId, ownerId) ?? event.ownerId === ownerId)) return
@@ -1308,6 +1312,7 @@ export function createRealtimeSessionRuntime({
       toolScope.abort(new Error('Client disconnected'))
       releaseVoiceClient()
       taskCoordinator.close()
+      unsubscribePrompts()
       unsubscribeMemory()
       clearResponseCandidate()
       turns.close()

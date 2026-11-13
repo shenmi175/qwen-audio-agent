@@ -4,45 +4,52 @@ import { resolve } from 'node:path'
 import { config } from '../core/config.mjs'
 import { recentConversationMessages } from '../../../shared/conversation-history.mjs'
 
-const PROMPT_FILE = 'PROMPT.md'
-const ASSISTANT_FILE = 'ASSISTANT.md'
-const MAX_PROMPT_CHARS = 16000
 const MAX_ASSISTANT_CHARS = 4000
 const MAX_RECENT_CHARS = 3500
-let langfusePrompt = ''
-let langfusePromptMeta = null
-
-
+let snapshot = null
+let pending = null
+let timer = null
+const listeners = new Set()
+let lastError = null
+export function subscribeFrontendPrompts(fn) { listeners.add(fn); return () => listeners.delete(fn) }
 function langfuseEnv() {
-  try {
-    const path = resolve(config.frontendPromptDir, '../../runtime/components/langfuse/service.env')
-    const values = Object.fromEntries(readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean).map(line => {
-      const index = line.indexOf('=')
-      return [line.slice(0, index), line.slice(index + 1)]
-    }))
-    return values
-  } catch { return {} }
+  const path = new URL('../../../runtime/components/langfuse/service.env', import.meta.url)
+  return Object.fromEntries(readFileSync(path, 'utf8').split(/\r?\n/).filter(line => line.includes('=')).map(line => {
+    const index = line.indexOf('='); return [line.slice(0,index), line.slice(index+1)]
+  }))
 }
-
+export function frontendPromptStatus() {
+  return { source: 'langfuse', label: 'production', versions: snapshot?.versions || null, lastError, refreshSeconds: 10 }
+}
 export async function initializeFrontendPrompt() {
-  const env = langfuseEnv()
-  const base = String(process.env.LANGFUSE_BASE_URL || 'http://127.0.0.1:3300').replace(/\/$/, '')
-  const publicKey = process.env.LANGFUSE_PUBLIC_KEY || env.LANGFUSE_INIT_PROJECT_PUBLIC_KEY || ''
-  const secretKey = process.env.LANGFUSE_SECRET_KEY || env.LANGFUSE_INIT_PROJECT_SECRET_KEY || ''
-  if (!publicKey || !secretKey) throw new Error('LANGFUSE_PROMPT_CREDENTIALS_MISSING')
-  const response = await fetch(`${base}/api/public/v2/prompts/frontend%2Fassistant-behavior?label=production`, {
-    headers: { authorization: `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString('base64')}` },
-    signal: AbortSignal.timeout(5000),
-  })
-  if (!response.ok) throw new Error(`LANGFUSE_PROMPT_${response.status}`)
-  const value = await response.json()
-  if (typeof value.prompt !== 'string' || !value.prompt.trim()) throw new Error('LANGFUSE_PROMPT_INVALID')
-  langfusePrompt = value.prompt.trim().slice(0, MAX_PROMPT_CHARS)
-  langfusePromptMeta = { name: value.name, version: value.version, source: 'langfuse' }
-  return langfusePromptMeta
+  if (pending) return pending
+  pending = (async () => {
+    const env = langfuseEnv()
+    const base = (process.env.LANGFUSE_BASE_URL || 'http://127.0.0.1:3300').replace(/\/$/, '')
+    const auth = Buffer.from((process.env.LANGFUSE_PUBLIC_KEY || env.LANGFUSE_INIT_PROJECT_PUBLIC_KEY) + ':' + (process.env.LANGFUSE_SECRET_KEY || env.LANGFUSE_INIT_PROJECT_SECRET_KEY)).toString('base64')
+    const entries = await Promise.all(['assistant-behavior','assistant-persona'].map(async key => {
+      const res = await fetch(`${base}/api/public/v2/prompts/frontend%2F${key}?label=production`, {
+        headers: {authorization: `Basic ${auth}`}, signal: AbortSignal.timeout(5000) })
+      if (!res.ok) throw new Error(`LANGFUSE_PROMPT_${res.status}`)
+      const data = await res.json()
+      if (data.type !== 'text' || typeof data.prompt !== 'string' || !data.prompt.trim()) throw new Error('LANGFUSE_PROMPT_INVALID')
+      return [key, data]
+    }))
+    const values = Object.fromEntries(entries)
+    const versions = Object.fromEntries(entries.map(([key,value]) => [key,value.version]))
+    const changed = JSON.stringify(snapshot?.versions) !== JSON.stringify(versions)
+    snapshot = {values,versions}
+    lastError = null
+    if (changed) for (const fn of listeners) { try { fn(frontendPromptStatus()) } catch {} }
+    return frontendPromptStatus()
+  })().catch(error => { lastError = error.message; throw error }).finally(() => { pending = null })
+  return pending
 }
-
-export function frontendPromptStatus() { return langfusePromptMeta }
+export function startFrontendPromptRefresh(logger) {
+  if (timer) return
+  timer = setInterval(() => initializeFrontendPrompt().catch(() => logger?.warn('frontend.prompt_refresh_failed', {code:lastError})),10000)
+  timer.unref()
+}
 
 function clean(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
@@ -97,19 +104,12 @@ export function currentTimeSnapshot({
 }
 
 export function loadFrontendPrompt() {
-  if (langfusePrompt) return langfusePrompt
-  const content = readFileSync(resolve(config.frontendPromptDir, PROMPT_FILE), 'utf8').trim()
-  if (!content) throw new Error(`${PROMPT_FILE} must not be empty`)
-  return [...content].slice(0, MAX_PROMPT_CHARS).join('')
+  if (!snapshot) throw new Error('LANGFUSE_PROMPT_UNAVAILABLE')
+  return snapshot.values['assistant-behavior'].prompt
 }
-
 export function loadAssistantProfile() {
-  const content = readFileSync(
-    config.assistantProfilePath || resolve(config.frontendPromptDir, ASSISTANT_FILE),
-    'utf8',
-  ).trim()
-  if (!content) throw new Error(`${ASSISTANT_FILE} must not be empty`)
-  return [...content].slice(0, MAX_ASSISTANT_CHARS).join('')
+  if (!snapshot) throw new Error('LANGFUSE_PROMPT_UNAVAILABLE')
+  return snapshot.values['assistant-persona'].prompt
 }
 
 export function resolveAssistantProfile(agentContext = {}) {

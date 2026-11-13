@@ -116,6 +116,9 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
         {category === 'memory' && <>
           <section className="web-settings-card">
             <h3>{t('长期记忆')}</h3>
+            <p className="web-settings-hint">对话提示词 · Langfuse production · 每 10 秒检查更新</p>
+            <p className="web-settings-hint">主提示词 v{learning.frontendPrompts?.versions?.['assistant-behavior'] ?? '—'} · 人格 v{learning.frontendPrompts?.versions?.['assistant-persona'] ?? '—'}</p>
+            {learning.frontendPrompts?.lastError && <p role="status">提示词刷新失败：{learning.frontendPrompts.lastError}</p>}
             <dl className="web-capabilities">
               <div><dt>{t('记忆范围')}</dt><dd>{memoryStatus?.scope === 'shared' ? t('所有设备共享') : t('按用户独立')}</dd></div>
               <div><dt>Graphiti</dt><dd>{t(capability.graphitiLabel)}</dd></div>
