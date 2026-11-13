@@ -16,6 +16,8 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
   const [graphiti, setGraphiti] = useState(null)
   const [liveMemory, setLiveMemory] = useState(null)
   const [memorySettings, setMemorySettings] = useState(null)
+  const [promptSaving, setPromptSaving] = useState(false)
+  const [promptNotice, setPromptNotice] = useState('')
   const [memoryTierNotice, setMemoryTierNotice] = useState('')
   const [diagnostics, setDiagnostics] = useState(null)
   const [systemReducesMotion, setSystemReducesMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
@@ -116,7 +118,26 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
         {category === 'memory' && <>
           <section className="web-settings-card">
             <h3>{t('长期记忆')}</h3>
-            <p className="web-settings-hint">对话提示词 · Langfuse production · 每 10 秒检查更新</p>
+            <p className="web-settings-hint">对话提示词 · Langfuse {learning.frontendPrompts?.label || 'production'} · 每 10 秒检查更新</p>
+            <label className="web-settings-field">提示词模式
+              <select disabled={promptSaving || !learning.frontendPrompts} value={learning.frontendPrompts?.mode || 'production'} onChange={async event => {
+                const mode = event.target.value
+                setPromptSaving(true); setPromptNotice('正在切换…')
+                try {
+                  const response = await fetch('/api/prompts/mode', {method:'PUT', headers:{'content-type':'application/json'}, body:JSON.stringify({mode})})
+                  const value = await response.json()
+                  if (!response.ok) throw new Error(value.code)
+                  setLiveMemory(previous => ({...previous,frontendPrompts:value}))
+                  setPromptNotice('已加载所选版本，当前回复结束后自动应用。')
+                } catch { setPromptNotice('切换失败，仍使用原模式。') }
+                finally { setPromptSaving(false) }
+              }}>
+                <option value="production">正式 · production</option>
+                <option value="debug">调试 · latest（保存即更新）</option>
+              </select>
+            </label>
+            <p className="web-settings-hint">适用于主提示词与人格，所有设备共享。调试模式保存后约 10 秒加载，无需发布 production。</p>
+            {promptNotice && <p role="status">{promptNotice}</p>}
             <p className="web-settings-hint">主提示词 v{learning.frontendPrompts?.versions?.['assistant-behavior'] ?? '—'} · 人格 v{learning.frontendPrompts?.versions?.['assistant-persona'] ?? '—'}</p>
             {learning.frontendPrompts?.lastError && <p role="status">提示词刷新失败：{learning.frontendPrompts.lastError}</p>}
             <dl className="web-capabilities">
