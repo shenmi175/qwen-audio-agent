@@ -144,6 +144,12 @@ export class GraphitiMemoryProvider {
     }
     return { changed, documents: this.list(ownerId), ...(task ? { task } : {}) }
   }
+  async settings() {
+    return this.call('/memory/settings', {})
+  }
+  async updateSettings(body) {
+    return this.call('/memory/settings', body)
+  }
   async control(ownerId, operation, body = {}) {
     if (!['query','observe','task','retry','apply','wait','status'].includes(operation)) throw error('MEMORY_INVALID_ACTION')
     const value = await this.call(`/memory/${operation}`, { ...body, owner_id: ownerId })

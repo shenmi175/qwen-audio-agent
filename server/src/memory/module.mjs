@@ -120,6 +120,14 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
         runtime: frontendMemoryRuntime?.health(),
       }))
       if (config.memoryProvider === 'graphiti') {
+        app.get('/api/memory/settings', async (_req, res) => {
+          try { res.json(await memoryProviderRuntime.settings()) }
+          catch (e) { res.status(503).json({ code: e.code || 'GRAPHITI_UNAVAILABLE' }) }
+        })
+        app.put('/api/memory/settings', async (req, res) => {
+          try { res.json(await memoryProviderRuntime.updateSettings(req.body || {})) }
+          catch (e) { res.status(400).json({ code: e.code || 'MEMORY_INVALID_TIER' }) }
+        })
         for (const [suffix, operation] of [['query','query'],['observe','observe'],['apply','apply'],['wait','wait'],['task','task'],['retry','retry']]) {
           app.post(`/api/memory/${suffix}`, async (req, res) => {
             try {

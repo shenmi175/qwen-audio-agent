@@ -112,6 +112,10 @@ async def status(body: Body):
 async def memory_settings():
     return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS), 'default_tier': 'medium'}
 
+@app.post('/memory/settings', dependencies=[Depends(authenticate)])
+async def post_memory_settings(body: MemorySettings):
+    return await update_memory_settings(body)
+
 @app.put('/memory/settings', dependencies=[Depends(authenticate)])
 async def update_memory_settings(body: MemorySettings):
     memory.tier = body.tier
