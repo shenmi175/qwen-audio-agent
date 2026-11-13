@@ -30,10 +30,15 @@ function localSecrets() {
 }
 
 function environment() {
+  const langfuseFile = resolve(state, '../langfuse/service.env')
+  const langfuse = existsSync(langfuseFile) ? parseEnv(readFileSync(langfuseFile, 'utf8')) : {}
   const baseUrl = process.env.QWEN_AUDIO_MEMORY_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
   const apiKey = process.env.QWEN_AUDIO_GRAPHITI_API_KEY || process.env.QWEN_AUDIO_MEMORY_API_KEY || process.env.DASHSCOPE_API_KEY || ''
   return {
     ...process.env, ...localSecrets(), ...diagnosticsEnvironment(),
+    LANGFUSE_BASE_URL: process.env.LANGFUSE_BASE_URL || langfuse.NEXTAUTH_URL || '',
+    LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY || langfuse.LANGFUSE_INIT_PROJECT_PUBLIC_KEY || '',
+    LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY || langfuse.LANGFUSE_INIT_PROJECT_SECRET_KEY || '',
     GRAPHITI_QUEUE_PATH: resolve(state, 'queue.sqlite3'),
     GRAPHITI_NEO4J_URI: `bolt://127.0.0.1:${process.env.GRAPHITI_NEO4J_BOLT_PORT || 7688}`,
     GRAPHITI_LLM_API_KEY: apiKey,
