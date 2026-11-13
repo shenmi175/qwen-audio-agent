@@ -15,6 +15,8 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
   const [notice, setNotice] = useState('')
   const [graphiti, setGraphiti] = useState(null)
   const [liveMemory, setLiveMemory] = useState(null)
+  const [memorySettings, setMemorySettings] = useState(null)
+  const [memoryTierNotice, setMemoryTierNotice] = useState('')
   const [diagnostics, setDiagnostics] = useState(null)
   const [systemReducesMotion, setSystemReducesMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   useEffect(() => {
@@ -27,6 +29,7 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
     const refresh = () => {
       read('/api/components/graphiti', setGraphiti)
       read('/api/memory/status', setLiveMemory)
+      read('/api/memory/settings', setMemorySettings)
       read('/api/diagnostics/status', setDiagnostics)
     }
     refresh()
@@ -122,6 +125,24 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
               <div><dt>{t('待处理任务')}</dt><dd>{learning.runtime?.pending_tasks ?? '—'}</dd></div>
             </dl>
             {capability.mode === 'connection-close' && <p className="web-settings-hint">{t('连接关闭后在后台提取长期记忆。')}</p>}
+            <div className="web-settings-field">
+              <label htmlFor="web-memory-tier">{t('记忆提取档位')}</label>
+              <select id="web-memory-tier" value={memorySettings?.tier || 'medium'} onChange={async event => {
+                const tier = event.target.value
+                setMemoryTierNotice(t('正在保存…'))
+                try {
+                  const response = await fetch('/api/memory/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tier }) })
+                  const value = await response.json()
+                  if (!response.ok) throw new Error(value.code || 'MEMORY_SETTINGS_FAILED')
+                  setMemorySettings(value); setMemoryTierNotice(t('已保存，后续后台记忆任务使用新档位。'))
+                } catch (error) { setMemoryTierNotice(error.message || 'MEMORY_SETTINGS_FAILED') }
+              }}>
+                <option value="light">{t('轻度')} · qwen-flash</option>
+                <option value="medium">{t('中等')} · qwen-plus</option>
+                <option value="advanced">{t('高级')} · qwen-max</option>
+              </select>
+              {memoryTierNotice && <p className="web-settings-notice" role="status">{memoryTierNotice}</p>}
+            </div>
             <p className="web-settings-hint">{t('此处展示后台记忆模型；上面的模型选择只改变实时对话。')}</p>
           </section>
           <section className="web-settings-card">
