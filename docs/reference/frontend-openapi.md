@@ -89,3 +89,5 @@ Keep both files in the same directory, configure credentials, and [restart the G
 Header and cookie parameters, non-JSON bodies, remote OpenAPI documents, and
 automatic exposure of undocumented operations are intentionally unsupported in
 this first version. Restart the Gateway after changing the config or document.
+
+Tool call-count limits are opt-in: omit maxCallsPerTurn or set it to 0 for no per-turn quota. There is no default total tool-loop duration limit. Single-request timeouts and result-size bounds remain in place.

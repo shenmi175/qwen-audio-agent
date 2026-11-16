@@ -1,3 +1,4 @@
+import { graphitiTransport, remoteGraphitiToken } from './transport.mjs'
 import { diagnosticCarrier } from '../diagnostics/node.mjs'
 import { diagnosticsEnvironment, diagnosticsConfigurationFingerprint } from '../diagnostics/lifecycle.mjs'
 import { execFile, spawn } from 'node:child_process'
@@ -13,9 +14,9 @@ const component = resolve(root, 'components/graphiti')
 const state = resolve(root, 'runtime/components/graphiti')
 const python = resolve(state, 'mcp-venv/bin/python')
 const pidFile = resolve(state, 'service.pid')
-const origin = () => `http://127.0.0.1:${Number(process.env.QWEN_AUDIO_GRAPHITI_PORT || 8310)}`
+const origin = () => graphitiTransport().url
 const integrationFingerprint = () => createHash('sha256').update(Buffer.concat(
-  ['memory_provider.py', 'official_mcp.py', 'qwen_schema_adapter.py', 'memory_policy.py', 'mcp-config.yaml', 'requirements.lock','mcp_tracing.py','../diagnostics/qwaudio_diagnostics/__init__.py','../diagnostics/qwaudio_diagnostics/otlp.py']
+  ['memory_provider.py', 'memory_tiers.py', 'official_mcp.py', 'qwen_schema_adapter.py', 'memory_policy.py', 'mcp-config.yaml', 'requirements.lock','mcp_launcher.py','../diagnostics/qwaudio_diagnostics/__init__.py']
     .map(name => readFileSync(resolve(component, name))))).digest('hex')
 const wait = ms => new Promise(done => setTimeout(done, ms))
 
@@ -30,15 +31,10 @@ function localSecrets() {
 }
 
 function environment() {
-  const langfuseFile = resolve(state, '../langfuse/service.env')
-  const langfuse = existsSync(langfuseFile) ? parseEnv(readFileSync(langfuseFile, 'utf8')) : {}
   const baseUrl = process.env.QWEN_AUDIO_MEMORY_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
   const apiKey = process.env.QWEN_AUDIO_GRAPHITI_API_KEY || process.env.QWEN_AUDIO_MEMORY_API_KEY || process.env.DASHSCOPE_API_KEY || ''
   return {
     ...process.env, ...localSecrets(), ...diagnosticsEnvironment(),
-    LANGFUSE_BASE_URL: process.env.LANGFUSE_BASE_URL || langfuse.NEXTAUTH_URL || '',
-    LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY || langfuse.LANGFUSE_INIT_PROJECT_PUBLIC_KEY || '',
-    LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY || langfuse.LANGFUSE_INIT_PROJECT_SECRET_KEY || '',
     GRAPHITI_QUEUE_PATH: resolve(state, 'queue.sqlite3'),
     GRAPHITI_NEO4J_URI: `bolt://127.0.0.1:${process.env.GRAPHITI_NEO4J_BOLT_PORT || 7688}`,
     GRAPHITI_LLM_API_KEY: apiKey,
@@ -60,13 +56,14 @@ export async function graphitiComponentStatus() {
     const response = await fetch(`${origin()}/readyz`, { signal: AbortSignal.timeout(3000) })
     const health = await response.json()
     if (!response.ok || health.component !== 'qwaudio-graphiti') throw new Error('Component is not ready')
-    return { enabled: true, url: origin(), ...health }
+    return { enabled: true, url: origin(), ...health, deployment: graphitiTransport().mode }
   } catch {
-    return { enabled: true, status: 'unavailable', url: origin(), memoryIntegration: false }
+    return { enabled: true, status: 'unavailable', url: origin(), deployment: graphitiTransport().mode, code: graphitiTransport().mode === 'remote' ? 'GRAPHITI_REMOTE_UNAVAILABLE' : 'GRAPHITI_UNAVAILABLE', memoryIntegration: false }
   }
 }
 
 export async function installGraphitiComponent() {
+  if (graphitiTransport().mode === 'remote') throw new Error('GRAPHITI_REMOTE_MANAGED_EXTERNALLY')
   localSecrets()
   const upstream = resolve(state, 'upstream')
   const commit = 'ebef986a0b2360211b65751c111cacb4a7d790eb'
@@ -84,6 +81,12 @@ export async function installGraphitiComponent() {
 export async function ensureGraphitiComponent({ logger } = {}) {
   if (process.env.QWEN_AUDIO_GRAPHITI_ENABLED !== 'on') return { enabled: false }
   const current = await graphitiComponentStatus()
+  if (graphitiTransport().mode === 'remote') {
+    if (current.status === 'ready' && (current.integrationVersion !== 6 || !current.memoryIntegration)) throw new Error('GRAPHITI_REMOTE_INCOMPATIBLE')
+    logger?.[current.status === 'ready' ? 'info' : 'warn']('component.graphiti_remote', {status:current.status, code:current.code})
+    return current
+  }
+
   if (current.status === 'ready' && current.integrationVersion === 6 && current.integrationFingerprint === integrationFingerprint() && current.diagnostics?.configurationFingerprint === diagnosticsConfigurationFingerprint()
     && current.memoryIntegration === (process.env.QWEN_AUDIO_MEMORY_PROVIDER === 'graphiti')) return current
   if (current.status === 'ready') await stopGraphitiService()
@@ -144,6 +147,7 @@ async function stopGraphitiService() {
 }
 
 export async function stopGraphitiComponent() {
+  if (graphitiTransport().mode === 'remote') return { stopped: false, managedExternally: true }
   await stopGraphitiService()
   await run('docker', ['compose', '-f', resolve(component, 'compose.yaml'), 'stop'], { env: environment(), timeout: 60000 })
   return { stopped: true, dataPreserved: true }
@@ -151,13 +155,27 @@ export async function stopGraphitiComponent() {
 
 // Only this server-side transport reads the private component token.
 export async function graphitiComponentRequest(path, payload) {
-  const response = await fetch(`${origin()}${path}`, {
-    method: 'POST', headers: { ...diagnosticCarrier(), 'content-type': 'application/json',
-      authorization: `Bearer ${localSecrets().GRAPHITI_COMPONENT_TOKEN}` },
-    body: JSON.stringify(payload), signal: AbortSignal.timeout(11000),
-  })
-  const value = await response.json()
-  if (!response.ok) throw Object.assign(new Error(value.code || 'GRAPHITI_UNAVAILABLE'),
-    { code: value.code || 'GRAPHITI_UNAVAILABLE' })
+  const transport = graphitiTransport()
+  let response
+  try {
+    response = await fetch(`${transport.url}${path}`, {
+      method: 'POST', headers: { ...diagnosticCarrier(), 'content-type': 'application/json',
+        authorization: `Bearer ${transport.mode === 'remote' ? remoteGraphitiToken(transport) : localSecrets().GRAPHITI_COMPONENT_TOKEN}` },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(11000),
+    })
+  } catch (error) {
+    const code = error.name === 'TimeoutError' ? 'GRAPHITI_RECALL_TIMEOUT'
+      : error.message === 'GRAPHITI_TOKEN_UNAVAILABLE' ? error.message
+      : transport.mode === 'remote' ? 'GRAPHITI_REMOTE_UNAVAILABLE' : 'GRAPHITI_UNAVAILABLE'
+    throw Object.assign(new Error(code), { code })
+  }
+  let value
+  try { value = await response.json() } catch {
+    throw Object.assign(new Error('GRAPHITI_INVALID_RESPONSE'), {code:'GRAPHITI_INVALID_RESPONSE'})
+  }
+  if (!response.ok) {
+    const code = response.status === 401 || response.status === 403 ? 'GRAPHITI_AUTH_FAILED' : value.code || 'GRAPHITI_UNAVAILABLE'
+    throw Object.assign(new Error(code), { code })
+  }
   return value
 }

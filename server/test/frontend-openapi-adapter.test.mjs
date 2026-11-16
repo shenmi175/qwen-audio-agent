@@ -115,7 +115,7 @@ test('discovers only enabled operationIds with standard function schemas', async
   assert.deepEqual(tools[1].policy, {
     timeoutMs: 8_000,
     maxResultBytes: 32 * 1024,
-    maxCallsPerTurn: 2,
+    maxCallsPerTurn: null,
   })
   assert.deepEqual(adapter.health(), {
     ok: true,

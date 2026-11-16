@@ -227,7 +227,7 @@ clearing; stricter guarantees require further validation.
 - `@roamhq/wrtc` and `sharp` load only in on-demand Node media workers, one per connection. Provider keys and history are not sent to workers. Binary/platform support needs platform-specific validation.
 - The native library can crash during natural teardown on macOS ARM64. Workers close media resources, acknowledge cleanup, then exit explicitly. The Gateway waits for actual process exit; crashes or forced kills are not reported as graceful shutdowns.
 - Retiring workers still consume connection quota. Gateway shutdown waits for workers; loss of parent IPC ends the child.
-- Defaults: four connections, a 20-second connection deadline, a 30-minute connection lifetime, and a 10-second disconnection grace period.
+- Defaults: four connections, a 20-second connection deadline, no default connection lifetime limit, and a 10-second disconnection grace period.
 - Output queues are bounded to 60 seconds. Slow consumers, invalid media sequences, or congested DataChannels close the affected connection.
 - Input video frames exceeding 1080p are dropped; clients should request 640x480. Encoding limits do not replace public-service quotas.
 - Failure does not silently switch to WSS; clients explicitly retry or choose WSS.

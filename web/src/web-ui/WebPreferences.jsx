@@ -118,31 +118,25 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
         {category === 'memory' && <>
           <section className="web-settings-card">
             <h3>{t('长期记忆')}</h3>
-            <p className="web-settings-hint">对话提示词 · Langfuse {learning.frontendPrompts?.label || 'production'} · 每 10 秒检查更新</p>
-            <label className="web-settings-field">提示词模式
-              <select disabled={promptSaving || !learning.frontendPrompts} value={learning.frontendPrompts?.mode || 'production'} onChange={async event => {
-                const mode = event.target.value
-                setPromptSaving(true); setPromptNotice('正在切换…')
-                try {
-                  const response = await fetch('/api/prompts/mode', {method:'PUT', headers:{'content-type':'application/json'}, body:JSON.stringify({mode})})
-                  const value = await response.json()
-                  if (!response.ok) throw new Error(value.code)
-                  setLiveMemory(previous => ({...previous,frontendPrompts:value}))
-                  setPromptNotice('已加载所选版本，当前回复结束后自动应用。')
-                } catch { setPromptNotice('切换失败，仍使用原模式。') }
-                finally { setPromptSaving(false) }
-              }}>
-                <option value="production">正式 · production</option>
-                <option value="debug">调试 · latest（保存即更新）</option>
-              </select>
-            </label>
-            <p className="web-settings-hint">适用于主提示词与人格，所有设备共享。调试模式保存后约 10 秒加载，无需发布 production。</p>
+            <p className="web-settings-hint">对话提示词 · 本地文件 · 每 10 秒检查更新，当前回复结束后自动应用。</p>
+            <p className="web-settings-hint">人格和行为文件位于 runtime/prompts/frontend；记忆提取规则位于 Graphiti 服务所在主机的 runtime/prompts/memory，新任务读取最新内容。</p>
+            <button type="button" disabled={promptSaving} onClick={async () => {
+              setPromptSaving(true); setPromptNotice('正在刷新…')
+              try {
+                const response = await fetch('/api/prompts/refresh', { method: 'POST' })
+                const value = await response.json()
+                if (!response.ok) throw new Error(value.code)
+                setLiveMemory(previous => ({ ...previous, frontendPrompts: value }))
+                setPromptNotice('已读取本地文件，当前回复结束后自动应用。')
+              } catch { setPromptNotice('刷新失败，继续使用上次有效内容。') }
+              finally { setPromptSaving(false) }
+            }}>立即刷新提示词</button>
             {promptNotice && <p role="status">{promptNotice}</p>}
-            <p className="web-settings-hint">主提示词 v{learning.frontendPrompts?.versions?.['assistant-behavior'] ?? '—'} · 人格 v{learning.frontendPrompts?.versions?.['assistant-persona'] ?? '—'}</p>
+            <p className="web-settings-hint">行为版本 {learning.frontendPrompts?.versions?.['assistant-behavior'] ?? '—'} · 人格版本 {learning.frontendPrompts?.versions?.['assistant-persona'] ?? '—'}</p>
             {learning.frontendPrompts?.lastError && <p role="status">提示词刷新失败：{learning.frontendPrompts.lastError}</p>}
             <dl className="web-capabilities">
               <div><dt>{t('记忆范围')}</dt><dd>{memoryStatus?.scope === 'shared' ? t('所有设备共享') : t('按用户独立')}</dd></div>
-              <div><dt>Graphiti</dt><dd>{t(capability.graphitiLabel)}</dd></div>
+              <div><dt>Graphiti</dt><dd>{t(capability.graphitiLabel)} · {graphiti?.deployment === 'remote' ? '云端' : '本机'}</dd></div>
               <div><dt>{t('自动提取')}</dt><dd>{capability.automatic ? t('已开启') : t('未启用')}</dd></div>
               <div><dt>{t('记忆 Agent 模型')}</dt><dd>{graphiti?.agentModel || learning.runtime?.agent_model || '—'}</dd></div>
               <div><dt>{t('图谱提取模型')}</dt><dd>{graphiti?.graphModel || '—'}</dd></div>
@@ -170,6 +164,7 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
             <p className="web-settings-hint">{t('此处展示后台记忆模型；上面的模型选择只改变实时对话。')}</p>
           </section>
           <section className="web-settings-card">
+            {diagnostics?.enabled ? <>
             <div className="web-settings-card-heading"><h3>{t('模型诊断')}</h3><span className="web-settings-badge">{diagnostics?.label || 'OTLP'}</span></div>
             <dl className="web-capabilities">
               <div><dt>{t('后台记忆输入输出')}</dt><dd>{recording ? t('已接入') : t('未启用或暂不可用')}</dd></div>
@@ -184,6 +179,11 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
             {diagnostics?.url && diagnostics?.projectId && sessionId && <a className="web-settings-link-button" target="_blank" rel="noopener noreferrer"
               href={new URL('project/'+encodeURIComponent(diagnostics.projectId)+'/sessions/'+encodeURIComponent(sessionId),diagnostics.url).href}>{t('查看当前会话诊断')} ↗</a>}
             <p className="web-settings-hint">{t('控制台需要单独登录。只记录接入后的请求，旧对话没有完整模型输入输出。')}</p>
+            </> : <>
+              <h3>{t('运行记录')}</h3>
+              <p className="web-settings-hint">外部诊断已关闭。聊天历史、记忆任务状态和服务错误日志仍然保留。</p>
+            </>}
+
           </section>
         </>}
         {category === 'appearance' && <section className="web-settings-card">

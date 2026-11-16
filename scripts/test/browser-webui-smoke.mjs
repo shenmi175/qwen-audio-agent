@@ -466,6 +466,7 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
   page.on('console', message => diagnostics.push({
     type: `console:${message.type()}`,
     message: message.text(),
+    location: message.location().url,
   }))
   const settingsProfiles = path.includes('model-settings') ? listDashScopeRealtimeModelProfiles() : null
   const videoProfile = path.includes('video-call') ? {
@@ -490,9 +491,11 @@ async function preparePage(context, path, diagnostics, pageBaseUrl = `${baseUrl}
   }))
   {
     const data = {
-      '/api/components/graphiti': { ready: true, diagnostics: { enabled: true }, agentModel: 'background-agent', graphModel: 'background-extraction' },
+      '/api/components/graphiti': { ready: true, diagnostics: { enabled: false }, agentModel: 'background-agent', graphModel: 'background-extraction' },
       '/api/memory/status': { runtime: { pending_tasks: 0 } },
-      '/api/diagnostics/status': { enabled: true, label: 'Langfuse', url: 'https://diagnostics.example.test/' },
+      '/api/memory/settings': { tier: 'medium', tiers: [] },
+      '/api/diagnostics/status': { enabled: false, label: 'Local logs', url: null },
+      '/api/prompts/refresh': { source: 'local', mode: 'local', label: 'local', versions: { 'assistant-behavior': 'test-behavior', 'assistant-persona': 'test-persona' }, refreshSeconds: 10 },
     }
     for (const [path, body] of Object.entries(data)) await page.route('**' + path, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }))
   }
@@ -1076,9 +1079,11 @@ async function testModelSettings(context, diagnostics) {
   await mkdir(resolve(projectRoot, 'runtime/settings-verification'), { recursive: true })
   await page.screenshot({ path: resolve(projectRoot, 'runtime/settings-verification/desktop.png') })
   await dialog.getByRole('button', { name: '记忆与诊断', exact: true }).click()
-  await dialog.getByRole('link', { name: /打开诊断控制台/ }).waitFor()
-  assert.equal(await dialog.getByRole('link', { name: /打开诊断控制台/ }).getAttribute('href'), 'https://diagnostics.example.test/')
-  assert.equal(await dialog.getByText('尚未接入', { exact: true }).count(), 2)
+  await dialog.getByRole('heading', { name: '运行记录', exact: true }).waitFor()
+  assert.equal(await dialog.getByRole('link', { name: /打开诊断控制台/ }).count(), 0)
+  await dialog.getByRole('button', { name: '立即刷新提示词', exact: true }).click()
+  await dialog.getByText('已读取本地文件，当前回复结束后自动应用。', { exact: true }).waitFor()
+  await dialog.getByText('行为版本 test-behavior · 人格版本 test-persona', { exact: true }).waitFor()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: resolve(projectRoot, 'runtime/settings-verification/mobile.png') })
   assert.ok(await dialog.evaluate(el => el.getBoundingClientRect().width < innerWidth))

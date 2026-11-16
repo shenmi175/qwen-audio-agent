@@ -54,7 +54,7 @@ test('normalizes explicit server and tool policies', () => {
           enabled: true,
           timeoutMs: 10_000,
           maxResultBytes: 32 * 1024,
-          maxCallsPerTurn: 2,
+          maxCallsPerTurn: null,
         },
       },
     }],
@@ -260,7 +260,7 @@ test('enables selected tools without classifying reads and writes', () => {
     enabled: true,
     timeoutMs: 10_000,
     maxResultBytes: 32 * 1024,
-    maxCallsPerTurn: 2,
+    maxCallsPerTurn: null,
   })
   assert.throws(
     () => normalizeFrontendMcpConfiguration(configuration({
@@ -315,4 +315,13 @@ test('rejects unsupported versions and out-of-range policies', () => {
     })),
     /must be 100-30000/,
   )
+})
+
+test('only applies a caller-selected call cap and does not clamp it to four', () => {
+  for (const [requested, expected] of [[undefined, null], [0, null], [50, 50]]) {
+    const input = configuration()
+    input.servers.documents.tools.search.maxCallsPerTurn = requested
+    const result = normalizeFrontendMcpConfiguration(input, { env: { MCP_TOKEN: 'test', WEATHER_TOKEN: 'test' }, baseDirectory: process.cwd() })
+    assert.equal(result.servers[0].tools.search.maxCallsPerTurn, expected)
+  }
 })

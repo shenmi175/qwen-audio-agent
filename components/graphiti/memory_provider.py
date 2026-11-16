@@ -18,7 +18,7 @@ from official_mcp import OfficialMCP, COMMIT, VERSION, upstream_error_code
 
 MEMORY_POLICY_FILE_SHA = hashlib.sha256(Path(__file__).with_name('memory_policy.py').read_bytes()).hexdigest()
 INTEGRATION_FINGERPRINT = hashlib.sha256(b''.join((Path(__file__).parent / n).read_bytes() for n in
-    ('memory_provider.py','official_mcp.py','qwen_schema_adapter.py','memory_policy.py','mcp-config.yaml','requirements.lock','mcp_tracing.py','../diagnostics/qwaudio_diagnostics/__init__.py','../diagnostics/qwaudio_diagnostics/otlp.py'))).hexdigest()
+    ('memory_provider.py','memory_tiers.py','official_mcp.py','qwen_schema_adapter.py','memory_policy.py','mcp-config.yaml','requirements.lock','mcp_launcher.py','../diagnostics/qwaudio_diagnostics/__init__.py'))).hexdigest()
 READ_TOOLS = {'search_nodes', 'search_memory_facts', 'get_episodes', 'get_episode_entities', 'get_entity_edge'}
 
 
@@ -98,10 +98,10 @@ class GraphitiProvider:
             rows = c.execute("SELECT o.state,count(*) n FROM mcp_operations o JOIN jobs j ON j.id=o.job WHERE j.owner=? GROUP BY o.state",
                              (memory_group(user_id),)).fetchall()
         return {**state, 'diagnostics':self.diagnostics.health(), 'provider': 'graphiti', 'transport': 'official-mcp', 'available': self.enabled and self._initialized,
-            'mcp_version': VERSION, 'mcp_commit': COMMIT, 'agent_model': self.model, 'memory_tier': self.tier, 'prompt_source': 'langfuse',
+            'mcp_version': VERSION, 'mcp_commit': COMMIT, 'agent_model': self.model, 'memory_tier': self.tier, 'prompt_source': 'local',
             'graph_model': self.config['llm_model'], 'structured_output':'qwen-forced-function', 'embedding_model': self.config['embedding_model'],
             'trigger': 'connection-close', 'operations': {r['state']:r['n'] for r in rows},
-            'policy_source': 'langfuse:production', 'policy_sha256': MEMORY_POLICY_FILE_SHA,
+            'policy_source': 'local', 'policy_sha256': MEMORY_POLICY_FILE_SHA,
             'error_code': state.get('error_code') or self.error}
 
     def list(self, **kwargs):
@@ -457,7 +457,8 @@ class GraphitiProvider:
             if m['role']=='tool':
                 try: collect(json.loads(m['content']))
                 except ValueError: pass
-        while step < 20:
+        # Continue until the model finishes; step is a persisted progress counter.
+        while True:
             pending = [call for m in history if m['role']=='assistant' for call in m.get('tool_calls',[]) if call['id'] not in completed]
             if not pending:
                 started = time.monotonic()
@@ -555,7 +556,6 @@ class GraphitiProvider:
                 completed.add(call['id'])
                 save()
                 self._emit('agent_tool', started, task_id=job['id'], tool=name, status='failed' if 'error' in value else 'succeeded')
-        raise MemoryErrorCode('MEMORY_AGENT_ROUND_LIMIT')
 
     async def fence_inflight(self, owner, current_job):
         with self.queue.connect() as c:
@@ -647,27 +647,26 @@ class GraphitiProvider:
                     if not job['payload']:
                         raise MemoryErrorCode('MEMORY_TASK_RETIRED')
                     payload = json.loads(job['payload'])
-                    async with operation_timeout(300):
-                        if job['kind']=='observe':
-                            result = await self.agent(job,payload)
-                        elif job['kind']=='remember':
-                            result = await self.add(job,'explicit',payload['content'])
-                            result['action'] = 'none' if result['empty'] else 'remember'
-                        elif job['kind'] in ('correct','forget'):
-                            result = await self.mutate(job,'explicit',payload['fact_ids'],
-                                replacement=payload['content'] if job['kind']=='correct' else None)
-                        elif job['kind']=='clear':
-                            # All writes are serialized by owner. Clearing retires all earlier operations.
-                            await self.fence_inflight(owner,job['id'])
-                            await self.mcp.call('clear_graph', {'group_ids':[owner]})
-                            self.queue.erase_before(owner,job['version'])
-                            with self.queue.connect() as c:
-                                for table in ('mcp_runs','mcp_mutations','mcp_operations'):
-                                    c.execute(f'DELETE FROM {table} WHERE job IN (SELECT id FROM jobs WHERE owner=?)',(owner,))
-                                c.execute('DELETE FROM mcp_masks WHERE owner=?',(owner,))
-                            result = {'action':'clear'}
-                        else:
-                            raise MemoryErrorCode('MEMORY_INVALID_ACTION')
+                    if job['kind']=='observe':
+                        result = await self.agent(job,payload)
+                    elif job['kind']=='remember':
+                        result = await self.add(job,'explicit',payload['content'])
+                        result['action'] = 'none' if result['empty'] else 'remember'
+                    elif job['kind'] in ('correct','forget'):
+                        result = await self.mutate(job,'explicit',payload['fact_ids'],
+                            replacement=payload['content'] if job['kind']=='correct' else None)
+                    elif job['kind']=='clear':
+                        # All writes are serialized by owner. Clearing retires all earlier operations.
+                        await self.fence_inflight(owner,job['id'])
+                        await self.mcp.call('clear_graph', {'group_ids':[owner]})
+                        self.queue.erase_before(owner,job['version'])
+                        with self.queue.connect() as c:
+                            for table in ('mcp_runs','mcp_mutations','mcp_operations'):
+                                c.execute(f'DELETE FROM {table} WHERE job IN (SELECT id FROM jobs WHERE owner=?)',(owner,))
+                            c.execute('DELETE FROM mcp_masks WHERE owner=?',(owner,))
+                        result = {'action':'clear'}
+                    else:
+                        raise MemoryErrorCode('MEMORY_INVALID_ACTION')
                     if observation.trace_id:
                         result['diagnostic_trace_id'] = observation.trace_id
                     observation.update(output=result)

@@ -1,5 +1,8 @@
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { before, after } from 'node:test'
 import * as frontendExports from '../src/frontend/frontend-tools.mjs'
 import * as agentTaskExports from '../src/frontend/tools/features/agent-task-tools.mjs'
 import {
@@ -16,7 +19,21 @@ import { KNOWLEDGE_TOOL_NAME } from '../src/knowledge/tools.mjs'
 import { FrontendToolRegistry } from '../src/frontend/tools/frontend-tool-registry.mjs'
 import { FrontendToolLoop } from '../src/frontend/tools/frontend-tool-loop.mjs'
 import { buildFrontendToolContext } from '../src/frontend/tools/frontend-tool-context.mjs'
-import { loadFrontendPrompt } from '../src/conversation/frontend-agent-context.mjs'
+import { loadFrontendPrompt, initializeFrontendPrompt } from '../src/conversation/frontend-agent-context.mjs'
+
+const promptFixture = mkdtempSync(join(tmpdir(), 'runtime-prompts-'))
+const previousPrompts = process.env.QWAUDIO_PROMPTS_DIR
+before(async () => {
+ process.env.QWAUDIO_PROMPTS_DIR = promptFixture
+ mkdirSync(join(promptFixture, 'frontend'))
+ for(const name of ['assistant-behavior','assistant-persona']) writeFileSync(join(promptFixture,'frontend',name+'.md'),'Synthetic test conversation policy.')
+ await initializeFrontendPrompt()
+})
+after(() => {
+ if(previousPrompts===undefined) delete process.env.QWAUDIO_PROMPTS_DIR
+ else process.env.QWAUDIO_PROMPTS_DIR=previousPrompts
+ rmSync(promptFixture,{recursive:true,force:true})
+})
 
 const DEFAULT_TOOL_NAMES = [
   'spawn_thinking',

@@ -84,9 +84,11 @@ export function registerWebRtcIngress(app, { options, getGateway, providerRegist
       const record = { connection, ownerId: req.identity.ownerId }
       connections.set(connectionId, record)
       const timer = setTimeout(() => connection.close(1008, 'connection timeout'), options.connectTimeoutMs || 20000)
-      const lifetime = setTimeout(() => connection.close(1000, 'session lifetime reached'), options.maxSessionMs || 30 * 60 * 1000)
+      const lifetime = Number(options.maxSessionMs) > 0
+        ? setTimeout(() => connection.close(1000, 'session lifetime reached'), options.maxSessionMs)
+        : null
       timer.unref?.()
-      lifetime.unref?.()
+      lifetime?.unref?.()
       let rejectClosed
       const closedDuringNegotiation = new Promise((_resolve, reject) => { rejectClosed = reject })
       connection.once('close', () => {

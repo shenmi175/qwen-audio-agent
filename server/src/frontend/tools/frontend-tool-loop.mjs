@@ -1,5 +1,5 @@
-const DEFAULT_MAX_CALLS_PER_TURN = 12
-const DEFAULT_MAX_DURATION_MS = 30_000
+const DEFAULT_MAX_CALLS_PER_TURN = Infinity
+const DEFAULT_MAX_DURATION_MS = Infinity
 const DEFAULT_MAX_TRACKED_TURNS = 100
 export const DEFAULT_FRONTEND_TOOL_MAX_RESULT_BYTES = 64 * 1024
 
@@ -46,9 +46,9 @@ export function boundFrontendToolResult(
 /**
  * Per-connection safety boundary for model-driven frontend tool loops.
  *
- * The guard is deliberately independent from tool behavior: it limits one
- * correlated user turn by time and call count, and blocks an exact repeated
- * call before a side effect can run. A new turn receives a fresh budget.
+ * Production turns have no default call-count or total-duration quota.
+ * Explicit limits remain available for tests or caller-selected policies.
+ * Exact repeated operations retain their existing idempotency protection.
  */
 export class FrontendToolLoop {
   #maxCallsPerTurn

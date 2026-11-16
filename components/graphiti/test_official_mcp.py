@@ -104,6 +104,56 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.llm.chat.completions.create.await_count,1)
         self.assertEqual(sum(n=='add_memory' for n,a in self.mcp.calls),1)
 
+    async def test_agent_resumes_at_old_limit_and_completes_beyond_twenty_calls(self):
+        job0=self.p.queue.submit('owner','s','long-run','observe',{'content':'evidence'})
+        with self.p.queue.connect() as c:
+            job=dict(c.execute('SELECT * FROM jobs WHERE id=?',(job0['id'],)).fetchone())
+            c.execute('INSERT INTO mcp_runs VALUES (?,?,?)',
+                (job['id'],json.dumps([{'role':'system','content':'policy'}]),20))
+        payload={'content':json.dumps([{'id':'u','role':'user','content':'evidence'}])}
+        def response(message):
+            return SimpleNamespace(usage=None,choices=[SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:message))])
+        reads=[response({'role':'assistant','tool_calls':[{'id':str(i),'type':'function',
+            'function':{'name':'read_conversation','arguments':'{}'}}]}) for i in range(25)]
+        self.p.tools=lambda:[]
+        self.p.llm.chat.completions.create=AsyncMock(side_effect=reads+[response({'role':'assistant','content':'done'})])
+        result=await self.p.agent(job,payload)
+        self.assertEqual(result['agent_steps'],46)
+        self.assertEqual(self.p.llm.chat.completions.create.await_count,26)
+
+    async def test_background_job_continues_past_five_minutes(self):
+        accepted=self.p.queue.submit('owner','s','slow','observe',{'content':'evidence'})
+        loop=asyncio.get_running_loop()
+        clock=loop.time
+        elapsed=0
+        async def slow_agent(*args):
+            nonlocal elapsed
+            elapsed=301
+            for _ in range(4):
+                await asyncio.sleep(0)
+            return {'action':'none'}
+        self.p.agent=slow_agent
+        with patch.object(loop,'time',side_effect=lambda:clock()+elapsed):
+            await self.p.process_one('owner')
+        self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'succeeded')
+
+    async def test_unbounded_job_remains_cancellable_and_resumable(self):
+        accepted=self.p.queue.submit('owner','s','cancel','observe',{'content':'evidence'})
+        started=asyncio.Event()
+        async def pending_agent(*args):
+            started.set()
+            await asyncio.Future()
+        self.p.agent=pending_agent
+        worker=asyncio.create_task(self.p.process_one('owner'))
+        await started.wait()
+        worker.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await worker
+        self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'processing')
+        self.p.agent=AsyncMock(return_value={'action':'none'})
+        await self.p.process_one('owner')
+        self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'succeeded')
+
     async def test_long_message_is_paginated_without_truncation(self):
         job0=self.p.queue.submit('owner','s','long','observe',{'content':'long'})
         with self.p.queue.connect() as c:

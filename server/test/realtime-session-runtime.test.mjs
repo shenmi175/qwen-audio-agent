@@ -1,5 +1,9 @@
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { initializeFrontendPrompt } from '../src/conversation/frontend-agent-context.mjs'
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { before, after } from 'node:test'
 import { createRealtimeSessionRuntime, permissionResponseGate } from '../src/voice/realtime-session-runtime.mjs'
 import { RealtimeFrontend, REALTIME_PROVIDERS } from '../src/voice/realtime-provider.mjs'
 import { SessionObservers } from '../src/voice/session-observers.mjs'
@@ -13,6 +17,19 @@ import { GatewayClientEvent as Input } from '../../shared/protocol/realtime-even
 import { GatewayEventRouter } from '../src/client/client-event-router.mjs'
 import { desktopClientTools } from '../../web/src/desktop/client-tools.js'
 
+const promptFixture = mkdtempSync(join(tmpdir(), 'runtime-prompts-'))
+const previousPrompts = process.env.QWAUDIO_PROMPTS_DIR
+before(async () => {
+ process.env.QWAUDIO_PROMPTS_DIR = promptFixture
+ mkdirSync(join(promptFixture, 'frontend'))
+ for(const name of ['assistant-behavior','assistant-persona']) writeFileSync(join(promptFixture,'frontend',name+'.md'),'Synthetic test conversation policy.')
+ await initializeFrontendPrompt()
+})
+after(() => {
+ if(previousPrompts===undefined) delete process.env.QWAUDIO_PROMPTS_DIR
+ else process.env.QWAUDIO_PROMPTS_DIR=previousPrompts
+ rmSync(promptFixture,{recursive:true,force:true})
+})
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
 test('idle timeout closes the provider, disables capture and output, and prevents reconnect', async t => {

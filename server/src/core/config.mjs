@@ -623,8 +623,8 @@ export const config = {
   ),
   scheduledTaskTimeoutMs: numberSetting(
     process.env.QWEN_AUDIO_AGENT_SCHEDULED_TASK_TIMEOUT_MS,
-    1_800_000,
-    { min: 60_000 },
+    0,
+    { min: 0 },
   ),
   offlineNotificationDelayMs: numberSetting(
     process.env.QWEN_AUDIO_AGENT_OFFLINE_NOTIFICATION_DELAY_MS,

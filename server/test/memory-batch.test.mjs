@@ -1,11 +1,27 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import test, { before, after } from 'node:test'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryBatchObserver } from '../src/memory/batch-observer.mjs'
 import { ConversationSync } from '../src/conversation/conversation-sync.mjs'
 import { frontendTools, buildFrontendInstructions } from '../src/frontend/frontend-tools.mjs'
+import { initializeFrontendPrompt } from '../src/conversation/frontend-agent-context.mjs'
+const promptDirectory = mkdtempSync(join(tmpdir(), 'batch-prompts-'))
+const previousPromptDirectory = process.env.QWAUDIO_PROMPTS_DIR
+before(async () => {
+ process.env.QWAUDIO_PROMPTS_DIR = promptDirectory
+ mkdirSync(join(promptDirectory, 'frontend'))
+ for (const name of ['assistant-behavior', 'assistant-persona']) {
+  writeFileSync(join(promptDirectory, 'frontend', name + '.md'), 'Synthetic conversation policy.')
+ }
+ await initializeFrontendPrompt()
+})
+after(() => {
+ if (previousPromptDirectory === undefined) delete process.env.QWAUDIO_PROMPTS_DIR
+ else process.env.QWAUDIO_PROMPTS_DIR = previousPromptDirectory
+ rmSync(promptDirectory, {recursive:true, force:true})
+})
 test('connection-close batching ignores elapsed time, preserves roles, retries identical ID and survives restart', async () => {
  const dir=mkdtempSync(join(tmpdir(),'memory-batch-')); let now=0, fail=true; const calls=[]
  const conversationSync=new ConversationSync()

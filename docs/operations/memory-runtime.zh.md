@@ -17,7 +17,7 @@
 3. 后台 Agent 分页读取完整会话，检索并选择合格用户原文，再通过 MCP 提交。
 4. 官方 Graphiti 提取实体、关系、有效时间和冲突；前台长期事实动态检索，不等待后台写入。
 
-唯一自定义提取策略为 components/graphiti/memory_policy.py。助手和网页内容不作为个人事实证据；不在提示中加入固定例句。普通后台结果只记录，不回注聊天。
+唯一自定义提取策略为 Graphiti 服务主机的 runtime/prompts/memory/{light,medium,advanced}.md。助手和网页内容不作为个人事实证据；不在提示中加入固定例句。普通后台结果只记录，不回注聊天。
 
 ## 模型兼容和上下文
 
@@ -45,14 +45,8 @@ GET /api/memory/status 显示 Provider、共享模式、后台批次、待处理
 
 运行数据、真实会话、私人验收报告、密钥、IDE 状态和部署备份不得提交到仓库。诊断留存应独立配置，不作为记忆答案或恢复来源。
 
-## 独立模型诊断
+## 运行记录与远程部署
 
-可选诊断接口位于 components/diagnostics，默认关闭，启用时使用 OTLP 批量后台导出。Langfuse 作为独立组件位于 components/langfuse，拥有自己的配置、数据卷与系统服务，不代理模型请求。
-
-正式后台链路记录 memory.job、memory.agent、agent.tool.*、mcp.*、graphiti.schema.*、graphiti.model 和 memory.query。原始请求、原始响应、Schema 转换、工具返回及 Token 均在私有诊断后端查看，普通日志只记录 ID、状态和统计。失败日志带 diagnostic_trace_id，成功任务结果包含该 ID。
-
-更换诊断后端只需调整 runtime/components/diagnostics/service.env 的 OTLP 配置及必要字段映射，重启 Gateway 后会通过配置指纹确保组件加载新配置。关闭诊断不会关闭记忆服务；平台故障不阻止模型调用和任务执行。
-
-诊断只记录启用后的请求，不自动重放历史会话。诊断数据不参与事实查询或任务恢复；清空记忆与删除诊断记录分别管理。自动删除尚未启用，需要明确授权后才能启用，手动清理工具默认仅预览。
-
-验证分两类：components/langfuse/verify_recording.py 检查真实收集链路与合成回执；verify_tracing.py 检查随机隔离身份的真实模型/图谱链路。必须分别报告，外部账户失败不能被合成回执通过掩盖。组件就绪不等于模型账户额度可用。
+外部诊断平台已移除。只保留原有业务日志、任务账本和错误状态，不再上报完整模型输入输出。
+Gateway 支持 local 与 remote 模式，状态接口显示部署位置；远程故障不会启动本机备用组件。
+配置、SSH 隧道与迁移约束见 components/graphiti/README.zh.md。

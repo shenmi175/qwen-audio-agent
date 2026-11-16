@@ -1,4 +1,4 @@
-import { frontendPromptStatus, setFrontendPromptMode } from '../conversation/frontend-agent-context.mjs'
+import { frontendPromptStatus, initializeFrontendPrompt } from '../conversation/frontend-agent-context.mjs'
 import { MemoryBatchObserver } from './batch-observer.mjs'
 import { dirname, join } from 'node:path'
 import { FrontendMemoryRuntime } from './runtime.mjs'
@@ -106,9 +106,9 @@ export function createMemoryModule({ config, logger, conversationSync, textModel
       return frontendMemoryRuntime?.close?.()
     },
     mountRoutes(app) {
-      app.put('/api/prompts/mode', async (req,res) => {
-        try { res.json(await setFrontendPromptMode(req.body?.mode)) }
-        catch (error) { res.status(error.message === 'PROMPT_MODE_INVALID' ? 400 : 503).json({code:error.message === 'PROMPT_MODE_INVALID' ? error.message : 'PROMPT_MODE_UPDATE_FAILED'}) }
+      app.post('/api/prompts/refresh', async (_req, res) => {
+        try { res.json(await initializeFrontendPrompt()) }
+        catch { res.status(503).json({ code: 'LOCAL_PROMPT_REFRESH_FAILED' }) }
       })
       app.get('/api/memory/status', (_req, res) => res.json({
         frontendPrompts: frontendPromptStatus(),

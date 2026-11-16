@@ -9,7 +9,7 @@
 
 1. 前台实时模型负责对话和联网工具；当前会话依靠上下文。
 2. 连接关闭（手动结束、新会话、3 分钟空闲或断网）后，Gateway 封存会话并异步提交。前台不等待保存结果。
-3. 后台 qwen3.7-plus Agent 分页读取完整会话，经 MCP 检索、去重、选择允许保存的用户原文，再调用 add_memory（官方 message 类型，稳定用户说话者标签）。唯一自定义提取策略在 memory_policy.py，没有固定答案或样例语句。
+3. 后台用户选择的 flash / plus / max Agent（默认 plus） 分页读取完整会话，经 MCP 检索、去重、选择允许保存的用户原文，再调用 add_memory（官方 message 类型，稳定用户说话者标签）。当前提取策略位于服务主机 runtime/prompts/memory/{light,medium,advanced}.md，没有固定答案或样例语句。
 4. 官方 MCP 使用 qwen3.7-plus 提取实体、关系、冲突和有效时间，text-embedding-v4 1024 维向量检索。前台长期事实同样经 MCP 动态检索。
 
 助手、搜索结果和一般知识不能充当个人事实证据。原文工具参数必须是所引用用户消息的逐字片段。所有 group_id 由服务端根据已认证主人身份注入。
@@ -17,7 +17,7 @@
 ## 写入与恢复
 
 SQLite 仅保存任务、Agent 执行游标和操作回执，不作为回答来源。add_memory 的 queued 返回不代表成功；只有可核验的已提交 episode 和 get_episode_entities 结果才能完成任务。没有事实的 episode 标记 empty。
-丢失确认时保留 unconfirmed，不在同一 MCP 进程盲目重复提交；进程重启后先核对图回执，再决定是否恢复。每组任务串行，模型任务最多 20 轮，单批总预算 5 分钟。
+丢失确认时保留 unconfirmed，不在同一 MCP 进程盲目重复提交；进程重启后先核对图回执，再决定是否恢复。每组任务串行，后台任务没有固定模型轮次或总时长上限，由模型完成、明确故障或服务取消结束。单次网络请求仍保留超时，执行游标持续保存以支持重启恢复。
 失败重试仅针对明确瞬时错误。官方队列没有任务状态工具，适配器仅根据从入队时点开始的、明确带本用户 group_id 的官方队列失败记录提前报告失败；不明确时仍保留 unconfirmed。账户欠费/状态、鉴权、限流及服务端错误分别编码。鉴权/参数错误直接失败。后台状态不回注聊天。
 
 更正/遗忘先屏蔽目标，使用 MCP 重建共享来源里的无关事实，再删除旧来源及目标边。删除记录、来源消息退休标记和历史任务世代阻止旧恢复任务重新导入。存在未确认写入时先关闭旧 MCP 进程，阻止删除后的迟到提交。保留聊天记录和迁移备份，不从备份自动恢复。
@@ -37,3 +37,24 @@ verify_official_mcp.py 真实验收必须使用正式环境加载器；它创建
 当前集成版本 6。Graphiti 的官方 Schema 经私有 Qwen 强制函数参数通道返回，再转换为官方客户端的 JSON 响应；不增加审查模型、不填造缺失字段，说明字段保持原有可选性。后台写入可选取本任务已检索到的有效事实来源，传给官方 previous_episode_uuids；重试保留同一上下文，不猜选最近作品。空 episode 不标记为已记住。
 
 部署与验收边界见 [运行文档](../../docs/operations/memory-runtime.zh.md)。语义正确性须逐项检查，不能仅凭成功状态判断。
+
+## 远程部署
+
+Gateway 的 runtime/components/graphiti/remote.env 支持 QWEN_AUDIO_GRAPHITI_MODE=remote、
+QWEN_AUDIO_GRAPHITI_URL=http://127.0.0.1:18310 和 QWEN_AUDIO_GRAPHITI_TOKEN_FILE（私有 Token 文件绝对路径）。
+远程模式只调用 API，不管理本机进程；连接失败不会回退本机或 Markdown。
+HTTP 仅允许回环地址，公网必须使用 HTTPS 或 SSH 隧道。
+
+当前采用专用账户经服务器 IP 转发 127.0.0.1:18310 到服务器 127.0.0.1:8310。
+隧道应固定主机公钥、使用受限专用密钥、ExitOnForwardFailure 和保活，并由系统服务重连。
+普通语音客户端不需要隧道；移动 Gateway 时迁移远程地址、Token 和隧道配置。
+
+云端根目录 /opt/qwaudio-graphiti，独立 Python 环境，官方 MCP 和 Neo4j 保持固定版本。
+compose.cloud.yaml 与 compose.yaml 一起使用。人格与行为提示词在 Gateway，三档记忆提示词在云端 runtime/prompts/memory。
+迁移需停写后冷备图数据库，并一致迁移任务账本、幂等记录与遗忘屏障。
+旧备份不参与自动恢复；云端发生新写入或遗忘后，回退必须迁回云端最新一致数据。
+
+服务管理：云端使用 qwaudio-graphiti.service 和 qwaudio-neo4j.service；Gateway 主机使用用户服务 qwaudio-graphiti-tunnel.service。
+迁移前冷备仅保留在 Gateway 的 runtime/backups/graphiti-cloud-migration，
+迁移时配置 qwaudio-migration-backup-expiry.timer，七天后删除冷备；实际到期时间以部署主机的 timer 为准。
+云端图和任务账本是迁移后的权威数据，切勿用旧冷备覆盖新写入或遗忘。

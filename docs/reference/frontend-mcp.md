@@ -41,7 +41,6 @@ DOCUMENT_MCP_AUTHORIZATION=Bearer replace-me
           "enabled": true,
           "timeoutMs": 10000,
           "maxResultBytes": 32768,
-          "maxCallsPerTurn": 2,
           "description": "Search the user's configured document source."
         },
         "create_issue": {
@@ -126,3 +125,5 @@ A configuration file alone is not enough: the service must be reachable, and the
 Restart the Gateway after changing this file. Put variables required by the
 background service in the user `config.env`; do not commit secrets to JSON or
 rely on temporary exports that exist only in the current terminal.
+
+Tool call-count limits are opt-in: omit maxCallsPerTurn or set it to 0 for no per-turn quota. There is no default total tool-loop duration limit. Single-request timeouts and result-size bounds remain in place.

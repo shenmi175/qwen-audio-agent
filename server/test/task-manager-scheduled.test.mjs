@@ -58,7 +58,7 @@ test('createScheduled creates a task with status scheduled and correct kind', ()
   assert.equal(reminder.reused, false)
 })
 
-test('createScheduled with type=task sets a timeout', () => {
+test('createScheduled with type=task has no default execution deadline', () => {
   const manager = new TaskManager()
   const future = Date.now() + 60_000
 
@@ -74,7 +74,7 @@ test('createScheduled with type=task sets a timeout', () => {
 
   assert.equal(task.status, 'scheduled')
   assert.equal(task.kind, 'scheduled_task')
-  assert.ok(task.timeoutMs > 0)
+  assert.equal(task.timeoutMs, null)
 })
 
 test('recurring scheduled tasks keep a stable series id across occurrences', () => {
@@ -316,4 +316,16 @@ test('createScheduled does not call drain (scheduled tasks wait)', async () => {
   await new Promise(resolve => setImmediate(resolve))
   const tasks = manager.list({ ownerId: 'owner' })
   assert.equal(tasks[0].status, 'scheduled')
+})
+
+test('scheduled execution deadlines are opt-in and zero explicitly disables them', () => {
+  const manager = new TaskManager({ scheduledTaskTimeoutMs: 1000 })
+  for (const [timeoutMs, expected] of [[undefined, 1000], [0, null], [5000, 5000]]) {
+    const task = manager.createScheduled({
+      objective: 'synthetic deadline check', ownerId: 'owner',
+      schedule: { at: Date.now() + 60_000 }, type: 'task', timeoutMs,
+      runner: trivialRunner,
+    })
+    assert.equal(task.timeoutMs, expected)
+  }
 })

@@ -114,3 +114,12 @@ test('bounds serialized tool results before they return to the model', () => {
   circular.self = circular
   assert.equal(boundFrontendToolResult(circular).accepted, false)
 })
+
+test('default production loop continues beyond old count and elapsed-time caps', () => {
+  let now = 0
+  const loop = new FrontendToolLoop({ now: () => now })
+  for (let i = 0; i < 50; i++) {
+    now += 10_000
+    assert.equal(loop.admit({ turnId: 'long-turn', tool, args: { page: i } }).admitted, true)
+  }
+})

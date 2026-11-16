@@ -41,11 +41,12 @@ test('model override survives protocol negotiation, with transport bounds checke
 })
 test('public diagnostics status never exposes exporter credentials or unsafe links', () => {
   const status = diagnosticsPublicStatus({
-    QWEN_AUDIO_DIAGNOSTICS_PROVIDER: 'otlp', QWEN_AUDIO_DIAGNOSTICS_LABEL: 'Langfuse',
+    QWEN_AUDIO_DIAGNOSTICS_PROVIDER: 'otlp', QWEN_AUDIO_DIAGNOSTICS_LABEL: 'External',
     QWEN_AUDIO_DIAGNOSTICS_UI_URL: 'https://console.example.test/path?token=secret#fragment',
     OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'Authorization=secret',
   })
-  assert.equal(status.url, 'https://console.example.test/path')
+  assert.equal(status.url, null)
+  assert.equal(status.enabled, false)
   assert.equal(JSON.stringify(status).includes('secret'), false)
   assert.equal(status.coverage.realtime, false)
   for (const url of ['javascript:alert(1)', 'https://user:password@example.test', 'broken']) {

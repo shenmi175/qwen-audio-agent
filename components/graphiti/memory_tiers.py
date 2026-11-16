@@ -1,9 +1,6 @@
-"""User-selected memory extraction tiers and Langfuse prompt resolution."""
-import base64
-import json
+"""User-selected memory extraction tiers and local prompt resolution."""
+import hashlib
 import os
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from dataclasses import dataclass
 from memory_queue import MemoryErrorCode
@@ -15,9 +12,9 @@ MODEL_ALIASES = {"light": "qwen-flash", "medium": "qwen-plus", "advanced": "qwen
 @dataclass(frozen=True)
 class MemoryPrompt:
     name: str
-    version: int | None
+    version: str | int | None
     content: str
-    source: str = "langfuse"
+    source: str = "local"
 
 def _tier_file():
     configured = os.environ.get("GRAPHITI_MEMORY_TIER_FILE")
@@ -45,29 +42,16 @@ def tier_model(tier=None):
         raise MemoryErrorCode("MEMORY_INVALID_TIER")
     return os.environ.get("GRAPHITI_MEMORY_MODEL_" + tier.upper(), MODEL_ALIASES[tier])
 
-def _langfuse_url(name):
-    base = os.environ.get("LANGFUSE_BASE_URL", "").rstrip("/")
-    if not base:
-        raise MemoryErrorCode("MEMORY_PROMPT_UNAVAILABLE")
-    return base + "/api/public/v2/prompts/" + urllib.parse.quote(name, safe="") + "?label=production"
-
 def fetch_prompt(tier=None):
     tier = tier or selected_tier()
-    name = os.environ.get("GRAPHITI_MEMORY_PROMPT_" + tier.upper(), "memory/observation/" + tier)
-    public = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
-    secret = os.environ.get("LANGFUSE_SECRET_KEY", "")
-    if not public or not secret:
-        raise MemoryErrorCode("MEMORY_PROMPT_UNAVAILABLE")
-    token = base64.b64encode((public + ":" + secret).encode()).decode()
-    request = urllib.request.Request(_langfuse_url(name), headers={"Authorization": "Basic " + token, "Accept": "application/json"})
+    if tier not in TIERS:
+        raise MemoryErrorCode("MEMORY_INVALID_TIER")
+    directory = Path(os.environ.get("QWAUDIO_PROMPTS_DIR") or Path(__file__).resolve().parents[2] / "runtime/prompts")
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode())
-    except Exception as exc:
+        content = (directory / "memory" / (tier + ".md")).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
         raise MemoryErrorCode("MEMORY_PROMPT_UNAVAILABLE") from exc
-    content = payload.get("prompt")
-    if isinstance(content, list):
-        content = "\n".join(str(item.get("content", "")) for item in content if isinstance(item, dict))
-    if not isinstance(content, str) or not content.strip():
+    if not content.strip():
         raise MemoryErrorCode("MEMORY_PROMPT_INVALID")
-    return MemoryPrompt(name=name, version=payload.get("version"), content=content)
+    return MemoryPrompt(name="memory/observation/" + tier,
+                        version=hashlib.sha256(content.encode()).hexdigest()[:12], content=content)

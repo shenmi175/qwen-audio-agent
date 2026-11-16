@@ -57,13 +57,13 @@ test('normalizes local documents, secrets, and per-operation policy', () => {
           enabled: true,
           timeoutMs: 8_000,
           maxResultBytes: 32 * 1024,
-          maxCallsPerTurn: 2,
+          maxCallsPerTurn: null,
         },
         createAlert: {
           enabled: true,
           timeoutMs: 8_000,
           maxResultBytes: 32 * 1024,
-          maxCallsPerTurn: 2,
+          maxCallsPerTurn: null,
         },
       },
     }],
@@ -135,4 +135,13 @@ test('fails closed for remote documents, unsafe transport, and obsolete approval
     })),
     /does not define readOnly or approval/,
   )
+})
+
+test('only applies a caller-selected call cap and does not clamp it to four', () => {
+  for (const [requested, expected] of [[undefined, null], [0, null], [50, 50]]) {
+    const input = configuration()
+    input.apis.weather.operations.currentWeather.maxCallsPerTurn = requested
+    const result = normalizeFrontendOpenApiConfiguration(input, { env: { MCP_TOKEN: 'test', WEATHER_TOKEN: 'test' }, baseDirectory: process.cwd() })
+    assert.equal(result.apis[0].operations.currentWeather.maxCallsPerTurn, expected)
+  }
 })

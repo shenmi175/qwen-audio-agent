@@ -89,7 +89,7 @@ class OfficialMCP:
         try:
             streams = await self.stack.enter_async_context(stdio_client(StdioServerParameters(
                 command=sys.executable,
-                args=[str(self.root / 'components/graphiti/mcp_tracing.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
+                args=[str(self.root / 'components/graphiti/mcp_launcher.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
                       '--transport', 'stdio'],
                 cwd=str(source), env=child_env), errlog=self.stderr))
             self.session = await self.stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=15))

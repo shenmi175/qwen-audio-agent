@@ -72,7 +72,7 @@ export class TaskManager {
     // Coalesce real backend updates without turning Task progress into a
     // transport heartbeat. Client connections own their own liveness signals.
     progressEventIntervalMs = 1_000,
-    scheduledTaskTimeoutMs = 1_800_000,
+    scheduledTaskTimeoutMs = 0,
     logger: taskLogger = null,
     sessionJournal = null,
   } = {}) {
@@ -606,7 +606,7 @@ export class TaskManager {
           : { timeZone: normalizeTimeZone(timeZone) }),
       },
       timeoutMs: type === 'task'
-        ? Number(timeoutMs) || this.scheduledTaskTimeoutMs
+        ? timeoutMs == null ? this.scheduledTaskTimeoutMs : Math.max(0, Number(timeoutMs) || 0)
         : null,
       createdAt: Date.now(),
       startedAt: null,
@@ -797,8 +797,7 @@ export class TaskManager {
     ) {
       task.runner = this.scheduledTaskRunner
     }
-    // Hard timeout watchdog for scheduled tasks (borrowed from OpenClaw's
-    // per-run wall-clock budget). Aborts the runner, then gives a 5-second
+    // Optional caller-selected timeout watchdog for scheduled tasks. Aborts the runner, then gives a 5-second
     // cleanup window before force-failing.
     if (task.kind === 'scheduled_task' && task.timeoutMs) {
       task.timeoutTimer = setTimeout(() => {

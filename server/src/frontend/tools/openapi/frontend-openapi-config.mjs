@@ -95,7 +95,9 @@ function normalizedPolicy(value = {}) {
       1_024,
       64 * 1024,
     ),
-    maxCallsPerTurn: boundedInteger(value.maxCallsPerTurn, 2, 1, 4),
+    maxCallsPerTurn: value.maxCallsPerTurn == null || Number(value.maxCallsPerTurn) === 0
+      ? null
+      : boundedInteger(value.maxCallsPerTurn, null, 1, Number.MAX_SAFE_INTEGER),
     ...(clean(value.description, 1_200)
       ? { description: clean(value.description, 1_200) }
       : {}),

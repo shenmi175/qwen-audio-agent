@@ -38,7 +38,6 @@ DOCUMENT_MCP_AUTHORIZATION=Bearer replace-me
           "enabled": true,
           "timeoutMs": 10000,
           "maxResultBytes": 32768,
-          "maxCallsPerTurn": 2,
           "description": "检索用户配置的文档来源。"
         },
         "create_issue": {
@@ -104,11 +103,11 @@ DOCUMENT_MCP_AUTHORIZATION=Bearer replace-me
 - `tools` 是显式白名单；启用的工具由 Gateway 在当前对话轮次内直接调用，不再根据
   读写类型插入一轮通用确认。
 - 同一模型响应中的工具可并发执行；全部结果回填且该响应结束后，再统一请求一次结果回复。
-  后续响应仍可继续调用工具，既有轮次预算与去重规则不变。
+  后续响应仍可继续调用工具；默认不设轮次预算，重复调用保护仍保留。
 - `readOnlyHint`、`destructiveHint` 等行为信息由 MCP Server 按标准 Tool Annotations
   提供。它们是元信息，不是 Gateway 的执行策略。
 - 需要确认、鉴权或业务安全校验的操作由 MCP Server 在自己的能力边界内强制执行。
-- Schema、描述、调用次数、执行时间和结果大小都有边界；MCP 结果按不可信数据
+- Schema、描述、单次请求时间和结果大小有边界；默认不限制每轮调用次数和累计时间；MCP 结果按不可信数据
   处理，不能覆盖系统指令或用户要求。
 - 发现阶段若缺少已启用工具或工具定义无效，该 Server 失败关闭，不暴露半套工具。
 

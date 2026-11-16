@@ -89,7 +89,7 @@ WebUI 右上角“设置”齿轮中的“分享”按钮会自动生成二维�
 
 ### 记忆与 Graphiti 组件
 
-右上设置显示长期记忆是否跨设备共享、自动提取是否已开启及其消息门槛、间隔。记忆来源和各项限制见[记忆运行诊断](../operations/memory-runtime.zh.md)。Graphiti 的安装与统一启动方式见[组件说明](../../components/graphiti/README.zh.md)，当前阶段仅部署组件，现有记忆仍由 Markdown Provider 提供。
+右上设置显示长期记忆是否跨设备共享、自动提取是否已开启及其消息门槛、间隔。记忆来源和各项限制见[记忆运行诊断](../operations/memory-runtime.zh.md)。Graphiti 的安装与统一启动方式见[组件说明](../../components/graphiti/README.zh.md)，长期事实由 Graphiti Provider 提供。
 
 
 ### 网页端选择对话模型
@@ -100,8 +100,4 @@ WebUI 右上角“设置”齿轮中的“分享”按钮会自动生成二维�
 「当前生效」仅在模型连接成功后显示；模型权限、专属业务空间地址及余额仍需由当前账户满足。
 此选项只影响实时对话，后台记忆 Agent 和图谱提取模型在「记忆与诊断」单独显示。
 
-「记忆与诊断」提供诊断控制台入口和当前接入范围。
-目前 OTLP/Langfuse 记录后台记忆模型输入输出、MCP/图谱工具、耗时、Token 和错误；
-当前 DashScope 实时模型、工具结果和播放回执已接入；原始音视频不归档，外部 Agent 未上报的内部调用不可见。历史聊天记录不等于完整模型请求记录。
-控制台地址由组件私有配置中的 \`QWEN_AUDIO_DIAGNOSTICS_UI_URL\` 提供，
-标签为 \`QWEN_AUDIO_DIAGNOSTICS_LABEL\`，不向浏览器暴露导出凭据。
+「记忆与诊断」展示云端／本机 Graphiti 状态、三档提取模型、任务状态及本地提示词刷新入口。聊天历史仍保留，完整模型输入输出不再上传外部平台。

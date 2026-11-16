@@ -176,7 +176,7 @@ test('preserves standard MCP annotations without turning them into execution pol
   assert.deepEqual(tool.policy, {
     timeoutMs: 10_000,
     maxResultBytes: 32 * 1024,
-    maxCallsPerTurn: 2,
+    maxCallsPerTurn: null,
   })
   assert.equal(mocks.calls.length, 0)
 })

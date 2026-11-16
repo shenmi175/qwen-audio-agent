@@ -206,3 +206,16 @@ test('content-safety recovery stays on the shared runtime and clears RTC output'
   assert.ok(media.events.some(event => event.type === 'output_audio_buffer.cleared'))
   assert.equal(h.frontends[1].agentContext.recentMessages.some(message => message.content === 'synthetic rejected turn'), false)
 })
+
+test('a connected WebRTC session has no default thirty-minute hard stop', async t => {
+  const setTimer = globalThis.setTimeout
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) =>
+    setTimer(fn, ms === 30 * 60 * 1000 ? 30 : ms, ...args))
+  const h = await rtcHarness(t)
+  assert.equal((await h.offer()).status, 200)
+  h.media[0].onOpen()
+  await waitUntil(() => h.frontends[0]?.ready)
+  await new Promise(resolve => setTimer(resolve, 80))
+  assert.equal(h.ingress.status().connections, 1)
+  assert.notEqual(h.media[0].closed, true)
+})
