@@ -3,6 +3,9 @@ import { toolFailure } from '../frontend/tools/tool-result.mjs'
 
 export const MEMORY_TOOL_NAME = 'memory'
 const SENSITIVE_MEMORY = /(?:pass(?:word)?|secret|api[_ -]?key|access[_ -]?token|credential|验证码|密码|密钥|令牌|\bsk-[a-z0-9_-]+)/i
+const GRAPHITI_MAINTENANCE = /^(?:请帮我|帮我|请)?(?:忘掉|忘记|删除|清除|更正|纠正|修正|更新|改一下)/
+const GRAPHITI_RECEIPT = '收到，我会在这次会话结束后处理。'
+const GRAPHITI_RECEIPT_INSTRUCTION = `只回复「${GRAPHITI_RECEIPT}」不复述内容，不声称操作已完成，不调用工具。`
 
 const MEMORY_TOOL_DESCRIPTION = [
   '读取或编辑当前用户的长期个性化偏好与稳定事实；不是对话历史、工作进度、命名清单或知识库文档查询。',
@@ -48,6 +51,31 @@ export const memoryToolEntries = [{
   policy: { requiredCapabilities: ['memory'] },
 }]
 
+export function graphitiReadTool(tool) {
+  const { query } = tool.function.parameters.properties
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: '只有回答跨会话的个人事实需要信息时才查询。同一轮用一个 query 包含要查的事实。用户要求记住、更正或遗忘时不调用。',
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          action: { type: 'string', enum: ['read'] },
+          query,
+        },
+      },
+    },
+  }
+}
+
+export const graphitiVoiceInstructions = [
+  '长期记忆由后台在本次会话结束后处理。用户普通陈述或自然说一件事变了时，直接按新信息接话，不提后台处理，不调用记忆工具。',
+  '只有用户明确要求管理长期记忆时，才简短确认收到，并说明会话结束后处理。',
+  `可以回复「${GRAPHITI_RECEIPT}」不查询记忆、不复述待遗忘内容、不调用其他工具代办。`,
+  '当前会话中不得声称后台操作已经完成，包括「已记住」「已更正」「已忘记」「以后不会再提」。',
+].join('\n')
+
 async function executeMemoryToolCall(runtime, {
   callId,
   turnId,
@@ -88,6 +116,21 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
   const hasNewText = Object.prototype.hasOwnProperty.call(args, 'new_text')
   const content = String(args.content || '').trim()
   const query = String(args.query || '').trim()
+  const graphiti = runtime.memoryService?.describe?.().provider?.key === 'graphiti'
+  const graphitiTranscript = graphiti && action === 'read'
+    ? await runtime.transcripts?.transcript?.(turnId)
+    : undefined
+  if (graphiti && (['append', 'replace'].includes(action) || GRAPHITI_MAINTENANCE.test(graphitiTranscript || ''))) {
+    await runtime.sendOutput(callId, {
+      status: 'deferred',
+      instruction: GRAPHITI_RECEIPT_INSTRUCTION,
+    }, turnId, null, {
+      ...responseOptions,
+      createResponse: true,
+      response: { tool_choice: 'none', instructions: GRAPHITI_RECEIPT_INSTRUCTION },
+    })
+    return
+  }
   const proposedContent = action === 'append' ? content : newText
   let output
   if (!runtime.memoryService) {
@@ -109,7 +152,8 @@ async function memory(runtime, callId, turnId, args, responseOptions) {
       let searchQuery = settingsOnly ? '' : query
       if (semanticQuery && !settingsOnly && !searchQuery) {
         // Restrict the fallback to this exact turn, never a previous session.
-        searchQuery = String(await runtime.transcripts?.transcript?.(turnId) || '').trim()
+        const transcript = graphiti ? graphitiTranscript : await runtime.transcripts?.transcript?.(turnId)
+        searchQuery = String(transcript || '').trim()
         if (!searchQuery) {
           await runtime.sendOutput(callId, toolFailure('memory_query_required',
             '请提供 query 查询长期事实；当前轮原文不可用，不能把交互设定快照当成事实检索结果。'),

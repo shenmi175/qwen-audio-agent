@@ -82,60 +82,91 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.p.queue.fail(self.p.queue.claim('owner'),'RATE_LIMIT',True)
         self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'failed')
 
-    async def test_agent_resumes_persisted_tool_call_before_model(self):
-        job0=self.p.queue.submit('owner','s','event','observe',{'content':'evidence'})
-        with self.p.queue.connect() as c:
-            job=dict(c.execute('SELECT * FROM jobs WHERE id=?',(job0['id'],)).fetchone())
-        payload={'content':json.dumps([{'id':'u','role':'user','content':'evidence','created_at':time.time()*1000}])}
-        history=[{'role':'system','content':'policy'},{'role':'user','content':'task'},
-            {'role':'assistant','tool_calls':[{'id':'pending','type':'function','function':{
-                'name':'add_memory','arguments':json.dumps({'evidence':[{'message_id':'u','excerpt':'evidence'}]})}},
-                {'id':'repeat','type':'function','function':{
-                'name':'add_memory','arguments':json.dumps({'evidence':[{'message_id':'u','excerpt':'evidence'}]})}}]}]
-        with self.p.queue.connect() as c:
-            c.execute('INSERT INTO mcp_runs VALUES (?,?,?)',(job['id'],json.dumps(history),1))
-        self.p.tools=lambda:[]
-        finish=SimpleNamespace(usage=None,choices=[SimpleNamespace(message=SimpleNamespace(
-            model_dump=lambda **kw:{'role':'assistant','content':'done'}))])
-        self.p.llm.chat.completions.create=AsyncMock(return_value=finish)
+    async def test_selects_once_and_reuses_validated_plan_without_reenqueuing(self):
+        accepted = self.p.queue.submit('owner', 's', 'event', 'observe', {'content': 'evidence'})
+        job = self.p.queue.claim('owner')
+        utterance = '我养的猫叫桂花芋圆。'
+        payload = {'content': json.dumps([
+            {'id': 'u', 'role': 'user', 'content': utterance},
+            {'id': 'a', 'role': 'assistant', 'content': '你还养了一只仓鼠。'},
+        ])}
+        good = {'action': 'remember', 'evidence': [{'message_id': 'u', 'excerpt': utterance}]}
+        candidates = [good, good, {'action': 'remember', 'evidence': [
+            {'message_id': 'a', 'excerpt': '你还养了一只仓鼠。'}]}]
+        self.p.llm.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+            usage=None, choices=[SimpleNamespace(message=SimpleNamespace(
+                tool_calls=None, content=json.dumps({'candidates': candidates})))]))
         self.mcp.commit.set()
-        result=await self.p.agent(job,payload)
-        self.assertEqual(result['action'],'remember')
-        self.assertEqual(self.p.llm.chat.completions.create.await_count,1)
-        self.assertEqual(sum(n=='add_memory' for n,a in self.mcp.calls),1)
+        with patch('memory_provider.fetch_prompt', return_value=SimpleNamespace(name='test', version='1', content='policy')):
+            answer = await self.p.agent(job, payload)
+            await self.p.agent(job, payload)
+        self.assertEqual(answer['action'], 'remember')
+        self.assertEqual(self.p.llm.chat.completions.create.await_count, 1)
+        self.assertNotIn('tools', self.p.llm.chat.completions.create.call_args.kwargs)
+        self.assertIn(utterance, self.p.llm.chat.completions.create.call_args.kwargs['messages'][1]['content'])
+        writes = [args for name, args in self.mcp.calls if name == 'add_memory']
+        self.assertEqual([write['episode_body'] for write in writes], ['用户: ' + utterance])
+        self.assertEqual(self.p.queue.task('owner', accepted['id'])['status'], 'processing')
 
-    async def test_agent_resumes_at_old_limit_and_completes_beyond_twenty_calls(self):
-        job0=self.p.queue.submit('owner','s','long-run','observe',{'content':'evidence'})
-        with self.p.queue.connect() as c:
-            job=dict(c.execute('SELECT * FROM jobs WHERE id=?',(job0['id'],)).fetchone())
-            c.execute('INSERT INTO mcp_runs VALUES (?,?,?)',
-                (job['id'],json.dumps([{'role':'system','content':'policy'}]),20))
-        payload={'content':json.dumps([{'id':'u','role':'user','content':'evidence'}])}
-        def response(message):
-            return SimpleNamespace(usage=None,choices=[SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:message))])
-        reads=[response({'role':'assistant','tool_calls':[{'id':str(i),'type':'function',
-            'function':{'name':'read_conversation','arguments':'{}'}}]}) for i in range(25)]
-        self.p.tools=lambda:[]
-        self.p.llm.chat.completions.create=AsyncMock(side_effect=reads+[response({'role':'assistant','content':'done'})])
-        result=await self.p.agent(job,payload)
-        self.assertEqual(result['agent_steps'],46)
-        self.assertEqual(self.p.llm.chat.completions.create.await_count,26)
+    async def test_selection_can_finish_without_a_graph_operation(self):
+        self.p.select = AsyncMock(return_value=[])
+        self.assertEqual((await self.p.agent(self.job, {'content': '你好'}))['action'], 'none')
+        self.assertEqual(self.mcp.calls, [])
 
-    async def test_background_job_continues_past_five_minutes(self):
+    async def test_natural_rename_is_an_episode_with_the_original_temporal_evidence(self):
+        utterance = '我养的猫以前叫银杏布丁，现在改名叫桂花芋圆了。'
+        source = [{'id': 'rename', 'role': 'user', 'content': utterance}]
+        request = {'message_id': 'rename', 'excerpt': utterance}
+        candidate = {'action': 'remember', 'evidence': [request]}
+        self.assertEqual(self.p.selection_plan(source, [
+            {'action': 'correct', 'request': request, 'target': '银杏布丁', 'evidence': [request]},
+        ]), [])
+        self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
+        self.p.mutate = AsyncMock()
+        self.mcp.commit.set()
+        result = await self.p.agent(self.job, {'content': json.dumps(source)})
+        self.assertEqual(result['action'], 'remember')
+        self.p.mutate.assert_not_awaited()
+        writes = [args for name, args in self.mcp.calls if name == 'add_memory']
+        self.assertEqual([write['episode_body'] for write in writes], ['用户: ' + utterance])
+        self.assertEqual(sum(name == 'get_episodes' for name, _ in self.mcp.calls), 3)
+
+    async def test_explicit_correction_uses_only_the_uniquely_matched_fact(self):
+        utterance = '请更正银杏布丁这条记忆，我养的猫现在叫桂花芋圆。'
+        source = [{'id': 'correction', 'role': 'user', 'content': utterance}]
+        candidate = {'action': 'correct', 'request': {'message_id': 'correction', 'excerpt': utterance},
+                     'target': '银杏布丁',
+                     'evidence': [{'message_id': 'correction', 'excerpt': '我养的猫现在叫桂花芋圆。'}]}
+        self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
+        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'old', 'fact': '猫叫银杏布丁'}]})
+        self.p.mutate = AsyncMock(return_value={'action': 'correct'})
+        result = await self.p.agent(self.job, {'content': json.dumps(source)})
+        self.assertEqual(result['action'], 'correct')
+        self.assertEqual(self.p.mutate.call_args.args[2], ['old'])
+        self.assertEqual(self.p.mutate.call_args.kwargs['replacement'], '用户: 我养的猫现在叫桂花芋圆。')
+        self.assertFalse(any(name == 'add_memory' for name, _ in self.mcp.calls))
+
+    async def test_exact_duplicate_requires_a_committed_active_fact(self):
+        body = '用户: 我养的猫叫桂花芋圆。'
+        self.mcp.saved = [{'name': 'previous', 'group_id': 'owner', 'uuid': 'ep1', 'content': body}]
+        self.mcp.commit.set()
+        self.p.entities = AsyncMock(return_value={'edges': [{'uuid': 'fact', 'episodes': ['ep1']}]})
+        self.p.select = AsyncMock(return_value=[{'action': 'remember', 'body': body, 'stamp': None, 'ids': ['event'], 'target': ''}])
+        result = await self.p.agent(self.job, {'content': '我养的猫叫桂花芋圆。'})
+        self.assertEqual(result['action'], 'none')
+        self.assertFalse(any(name == 'add_memory' for name, args in self.mcp.calls))
+
+    async def test_background_job_fails_at_its_deadline(self):
         accepted=self.p.queue.submit('owner','s','slow','observe',{'content':'evidence'})
-        loop=asyncio.get_running_loop()
-        clock=loop.time
-        elapsed=0
+        self.p.config['write_timeout_ms'] = 20
+
         async def slow_agent(*args):
-            nonlocal elapsed
-            elapsed=301
-            for _ in range(4):
-                await asyncio.sleep(0)
-            return {'action':'none'}
-        self.p.agent=slow_agent
-        with patch.object(loop,'time',side_effect=lambda:clock()+elapsed):
-            await self.p.process_one('owner')
-        self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'succeeded')
+            await asyncio.Future()
+
+        self.p.agent = slow_agent
+        await asyncio.wait_for(self.p.process_one('owner'), 1)
+        task = self.p.queue.task('owner',accepted['id'])
+        self.assertEqual((task['status'], task['code'], task['attempts']), ('failed', 'GRAPHITI_WRITE_TIMEOUT', 1))
 
     async def test_unbounded_job_remains_cancellable_and_resumable(self):
         accepted=self.p.queue.submit('owner','s','cancel','observe',{'content':'evidence'})
@@ -153,27 +184,6 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.p.agent=AsyncMock(return_value={'action':'none'})
         await self.p.process_one('owner')
         self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'succeeded')
-
-    async def test_long_message_is_paginated_without_truncation(self):
-        job0=self.p.queue.submit('owner','s','long','observe',{'content':'long'})
-        with self.p.queue.connect() as c:
-            job=dict(c.execute('SELECT * FROM jobs WHERE id=?',(job0['id'],)).fetchone())
-        original='完整原文'*5000
-        payload={'content':json.dumps([{'id':'long','role':'user','content':original,'created_at':time.time()*1000}])}
-        def response(message):
-            return SimpleNamespace(usage=None,choices=[SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:message))])
-        def read(cid,char):
-            return {'role':'assistant','tool_calls':[{'id':cid,'type':'function','function':{
-                'name':'read_conversation','arguments':json.dumps({'offset':0,'char_offset':char})}}]}
-        self.p.tools=lambda:[]
-        self.p.llm.chat.completions.create=AsyncMock(side_effect=[
-            response(read('first',0)),response(read('second',12000)),response({'role':'assistant','content':'done'})])
-        await self.p.agent(job,payload)
-        with self.p.queue.connect() as c:
-            history=json.loads(c.execute('SELECT messages FROM mcp_runs WHERE job=?',(job['id'],)).fetchone()[0])
-        pages=[json.loads(m['content']) for m in history if m['role']=='tool']
-        self.assertEqual(''.join(p['messages'][0]['content'] for p in pages),original)
-        self.assertEqual(pages[-1]['next_offset'],None)
 
     async def test_billing_failure_is_explicit_and_not_retryable(self):
         self.assertEqual(error_code(RuntimeError('Error code: 400 - https://help.aliyun.com/zh/model-studio/error-code#overdue-payment')),
@@ -216,13 +226,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(client.failed_queue_code('owner',offset))
         self.assertEqual(client.failed_queue_code('owner',0),'GRAPHITI_UPSTREAM_ACCOUNT_BLOCKED')
 
-    async def test_explanatory_fields_and_forget_excerpts_are_not_required(self):
-        from memory_provider import READ_TOOLS
-        self.mcp.tools={n:SimpleNamespace(input_schema={'type':'object','properties':{}},description='') for n in READ_TOOLS}
-        tools=self.p.tools()
-        maintain=next(t['function'] for t in tools if t['function']['name']=='maintain_memory')
-        self.assertEqual(set(maintain['parameters']['required']),{'action','fact_ids','request_message_id'})
-        self.assertNotIn('explanation',maintain['parameters']['properties'])
+    async def test_episode_description_is_not_required_to_read_provenance(self):
         # Official tool status messages are descriptive; absence doesn't block data parsing.
         self.mcp.commit.set()
         self.mcp.saved=[{'uuid':'ep','group_id':'owner','name':'marker'}]
@@ -235,27 +239,48 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(MemoryErrorCode,'GRAPHITI_MODEL_OUTPUT_INVALID'):
             await self.p.add(self.job,'call','evidence')
 
-    async def test_forget_without_explanation_executes_and_unknown_action_does_not(self):
-        for action,expected_calls in (('forget',1),('unexpected',0)):
-            with self.subTest(action=action):
-                accepted=self.p.queue.submit('owner','s',action,'observe',{'content':'request'})
-                with self.p.queue.connect() as c:
-                    job=dict(c.execute('SELECT * FROM jobs WHERE id=?',(accepted['id'],)).fetchone())
-                    history=[{'role':'system','content':'policy'},{'role':'user','content':'task'},
-                        {'role':'assistant','tool_calls':[{'id':'search','type':'function','function':{'name':'search_memory_facts','arguments':'{}'}}]},
-                        {'role':'tool','tool_call_id':'search','content':json.dumps({'facts':[{'uuid':'target','fact':'known fact','group_id':'owner'}]})},
-                        {'role':'assistant','tool_calls':[{'id':'mutation','type':'function','function':{
-                            'name':'maintain_memory','arguments':json.dumps({'action':action,'fact_ids':['target'],'request_message_id':'u'})}}]}]
-                    c.execute('INSERT INTO mcp_runs VALUES (?,?,?)',(job['id'],json.dumps(history),1))
-                self.p.tools=lambda:[]
-                self.p.mutate=AsyncMock(return_value={'action':'forget'})
-                self.p.llm.chat.completions.create=AsyncMock(return_value=SimpleNamespace(usage=None,choices=[
-                    SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:{'role':'assistant','content':'done'}))]))
-                payload={'content':json.dumps([{'id':'u','role':'user','content':'explicit request','created_at':time.time()*1000}])}
-                await self.p.agent(job,payload)
-                self.assertEqual(self.p.mutate.await_count,expected_calls)
-                if expected_calls:
-                    self.assertIsNone(self.p.mutate.call_args.kwargs['replacement'])
+    async def test_forget_requires_affirmative_user_intent_and_unique_fact(self):
+        words = '请忘掉桂花芋圆。'
+        source = [{'id': 'u', 'role': 'user', 'content': words}]
+        candidate = {'action': 'forget', 'request': {'message_id': 'u', 'excerpt': words}, 'target': '桂花芋圆'}
+        self.assertEqual(self.p.selection_plan([{**source[0], 'content': '不要' + words}], [candidate]), [])
+        self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
+        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'fact', 'fact': '猫叫桂花芋圆'}]})
+        self.p.mutate = AsyncMock(return_value={'action': 'forget'})
+        result = await self.p.agent(self.job, {'content': json.dumps(source)})
+        self.assertEqual(result['action'], 'forget')
+        self.assertEqual(self.p.mutate.call_args.args[2], ['fact'])
+        self.assertIsNone(self.p.mutate.call_args.kwargs['replacement'])
+
+    async def test_forget_keeps_shared_active_facts_without_recreating_expired_ones(self):
+        self.p.queue.submit('owner', 'session', 'forgotten', 'forget', {'fact_ids': ['forgotten']})
+        job = self.p.queue.claim('owner')
+        episode = {'uuid': 'source', 'source_description': json.dumps({'message_ids': ['old-message']})}
+        self.p.episodes = AsyncMock(side_effect=[[episode], [episode], []])
+        self.p.edge = AsyncMock(side_effect=[{'episodes': ['source']}, MemoryErrorCode('MCP_TARGET_NOT_FOUND')])
+        self.p.entities = AsyncMock(return_value={'edges': [
+            {'uuid': 'forgotten', 'fact': 'the targeted fact'},
+            {'uuid': 'keep', 'fact': 'an unrelated current fact'},
+            {'uuid': 'expired', 'fact': 'an old fact', 'expired_at': '2026-01-01T00:00:00Z'},
+        ]})
+        self.p.add = AsyncMock(return_value={'fact_ids': ['kept']})
+        result = await self.p.mutate(job, 'explicit', ['forgotten'])
+        self.assertEqual(result['preserved_facts'], 1)
+        self.p.add.assert_awaited_once_with(job, 'explicit:survivor:0', 'an unrelated current fact')
+        self.assertEqual(self.mcp.calls, [('delete_episode', {'uuid': 'source', 'group_id': 'owner'})])
+        with self.p.queue.connect() as queue:
+            retired = queue.execute('SELECT message_id FROM retired_sources WHERE owner=?', ('owner',)).fetchone()
+        self.assertEqual(retired['message_id'], 'old-message')
+
+    async def test_user_opt_out_and_sensitive_excerpts_are_excluded(self):
+        source = [
+            {'id': 'u', 'role': 'user', 'content': '我的猫叫团子。别记住。'},
+            {'id': 'k', 'role': 'user', 'content': '我的密码是这么写的。'},
+        ]
+        def remember(message_id, excerpt):
+            return {'action': 'remember', 'evidence': [{'message_id': message_id, 'excerpt': excerpt}]}
+        self.assertEqual(self.p.selection_plan(source, [
+            remember('u', '我的猫叫团子。'), remember('k', source[1]['content'])]), [])
 
     async def test_previous_release_evidence_key_recovers_without_resubmission(self):
         accepted=self.p.queue.submit('owner','s','legacy','observe',{'content':'source'})
@@ -272,9 +297,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         with self.p.queue.connect() as c:
             c.execute('INSERT INTO mcp_operations VALUES (?,?,?,?,?,?)',(job['id'],key,'marker','old-epoch','committed',json.dumps(receipt)))
             c.execute('INSERT INTO mcp_runs VALUES (?,?,?)',(job['id'],json.dumps(history),1))
-        self.p.tools=lambda:[]
-        self.p.llm.chat.completions.create=AsyncMock(return_value=SimpleNamespace(usage=None,choices=[
-            SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:{'role':'assistant','content':'done'}))]))
+        self.p.select = AsyncMock(return_value=[{'action':'remember','body':body,'stamp':stamp,'ids':ids,'target':''}])
         result=await self.p.agent(job,{'content':json.dumps([message])})
         self.assertEqual(result['action'],'remember')
         self.assertFalse(any(name=='add_memory' for name,args in self.mcp.calls))

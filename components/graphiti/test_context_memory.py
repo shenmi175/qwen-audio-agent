@@ -111,9 +111,9 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.empty=True
         receipt=await self.p.add(self.job,'empty','source')
         self.assertEqual(receipt['outcome'],'no_facts_extracted')
-        self.p.tools=lambda:[]
-        self.p.llm.chat.completions.create=AsyncMock(return_value=SimpleNamespace(usage=None,
-            choices=[SimpleNamespace(message=SimpleNamespace(model_dump=lambda **kw:{'role':'assistant','content':'done'}))]))
+        self.p.select = AsyncMock(return_value=[
+            {'action':'remember','body':'用户: source','stamp':None,'ids':['user'],'target':''},
+        ])
         result=await self.p.agent(self.job,{'content':json.dumps([{'id':'user','role':'user','content':'source','created_at':time.time()*1000}])})
         self.assertEqual(result['action'],'none')
         self.assertEqual(result['outcome'],'no_facts_extracted')

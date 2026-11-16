@@ -5,18 +5,22 @@ import { memoryToolHandlers } from '../src/memory/tools.mjs'
 import { TurnTranscripts } from '../src/frontend/tools/turn-transcripts.mjs'
 
 function harness(result = { status: 'hit', facts: [{ id: 'fact-random', fact: 'a generated personal fact', sources: [{ id: 'source-random' }] }], trace_id: 'trace', read_version: 7 }) {
-  const queries = [], outputs = []
+  const queries = [], outputs = [], writes = [], responseOptions = []
   const memoryService = new FrontendMemoryRuntime({ provider: {
     describe: () => ({ protocolVersion: 2, key: 'graphiti', label: 'Graphiti', capabilities: { semanticQuery: true } }),
     list: () => [{ id: 'settings', scope: 'user', content: 'concise answers' }],
     query: async (owner, query) => { queries.push({ owner, query }); return { memories: [], context: JSON.stringify(result), ...result } },
-    apply: async () => ({ changed: 0, documents: [] }),
+    apply: async (...args) => { writes.push(args); return { changed: 0, documents: [] } },
   } })
   const transcripts = new TurnTranscripts({ waitMs: 1 })
   const runtime = { ownerId: 'owner', sessionId: 'clean-session', memoryService, transcripts,
     beginDeferredToolResponse: () => null, completeDeferredToolResponse: async () => {},
-    sendOutput: async (_id, output) => outputs.push(output) }
-  return { queries, outputs, transcripts, read: async (args = {}, turnId = 'current') => {
+    sendOutput: async (_id, output, _turn, _task, options) => {
+      outputs.push(output)
+      responseOptions.push(options)
+    },
+  }
+  return { queries, outputs, writes, responseOptions, transcripts, read: async (args = {}, turnId = 'current') => {
     await memoryToolHandlers(runtime).memory({ callId: 'read', turnId, args: { action: 'read', ...args }, event: {}, callContext: {} })
     return outputs.at(-1)
   } }
@@ -62,4 +66,26 @@ test('only an actual empty graph query yields not_found', async () => {
   kit.transcripts.record('current', 'new random topic')
   const output = await kit.read()
   assert.equal(kit.queries.length, 1); assert.equal(output.status, 'not_found'); assert.equal(output.count, 0)
+})
+
+test('a stray Graphiti read during a forget or correction returns a tool-free receipt', async () => {
+  for (const text of ['请忘掉桂花芋圆这个名字。', '请更正桂花芋圆这条记忆，我养的猫叫银杏布丁。']) {
+    const kit = harness()
+    kit.transcripts.record('current', text)
+    const output = await kit.read({ query: '我养的猫的名字' })
+    assert.equal(output.status, 'deferred')
+    assert.match(output.instruction, /会话结束后处理/)
+    assert.equal(kit.responseOptions[0].response.tool_choice, 'none')
+    assert.deepEqual(kit.queries, [])
+    assert.deepEqual(kit.writes, [])
+  }
+})
+
+test('Graphiti refuses realtime writes even when the model sends legacy arguments', async () => {
+  const kit = harness()
+  const output = await kit.read({ action: 'replace', document: 'memory',
+    old_text: '我养的猫叫桂花芋圆', new_text: '', fact_id: 'fact-random' })
+  assert.equal(output.status, 'deferred')
+  assert.deepEqual(kit.queries, [])
+  assert.deepEqual(kit.writes, [])
 })

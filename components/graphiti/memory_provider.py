@@ -3,8 +3,10 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from openai import AsyncOpenAI
 from qwaudio_diagnostics import get_recorder
 from component_config import graphiti_settings, load_qwen_key
 from memory_queue import MemoryQueue, MemoryErrorCode
+from memory_policy import SELECTION_PROMPT
 from memory_tiers import selected_tier, tier_model, fetch_prompt
 from official_mcp import OfficialMCP, COMMIT, VERSION, upstream_error_code
 
@@ -20,6 +23,9 @@ MEMORY_POLICY_FILE_SHA = hashlib.sha256(Path(__file__).with_name('memory_policy.
 INTEGRATION_FINGERPRINT = hashlib.sha256(b''.join((Path(__file__).parent / n).read_bytes() for n in
     ('memory_provider.py','memory_tiers.py','official_mcp.py','qwen_schema_adapter.py','memory_policy.py','mcp-config.yaml','requirements.lock','mcp_launcher.py','../diagnostics/qwaudio_diagnostics/__init__.py'))).hexdigest()
 READ_TOOLS = {'search_nodes', 'search_memory_facts', 'get_episodes', 'get_episode_entities', 'get_entity_edge'}
+PRIVATE_EVIDENCE = re.compile(r'密码|验证码|密钥|令牌|支付凭据|银行卡号|证件号|\b(?:api[ _-]?key|password|access[ _-]?token|sk-[\w-]+)\b', re.I)
+DO_NOT_SAVE = re.compile(r'(?:不要|别|不用|无需|不许)(?:保存|记录|记下|记住)')
+MAX_ACTIVE_OWNERS = 4
 
 
 def memory_group(user_id, device_id=None):
@@ -43,9 +49,15 @@ def error_code(exc):
         'APIConnectionError', 'APITimeoutError', 'ReadTimeout', 'ConnectError')
 
 
-def function(name, description, properties, required=()):
-    return {'type': 'function', 'function': {'name': name, 'description': description,
-        'parameters': {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}}}
+def normalized_evidence(text):
+    return ' '.join(text.split()).rstrip('。！？!?')
+
+
+def source_operation(body, stamp, ids, context=()):
+    identity = {'body': body, 'reference_time': stamp, 'message_ids': ids}
+    if context:
+        identity['context_fact_ids'] = list(context)
+    return 'source-' + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
 class GraphitiProvider:
@@ -62,6 +74,8 @@ class GraphitiProvider:
         self.error = None
         self._runner = None
         self._initialized = False
+        self._mcp_epoch_lock = asyncio.Lock()
+        self._mcp_restart = None
         with self.queue.connect() as c:
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS mcp_runs(job TEXT PRIMARY KEY, messages TEXT NOT NULL, step INTEGER NOT NULL);
@@ -148,9 +162,11 @@ class GraphitiProvider:
             raise MemoryErrorCode('MEMORY_OWNER_MISMATCH')
         return value
 
-    async def entities(self, owner, ids):
-        known = {e['uuid'] for e in await self.episodes(owner)}
-        if not ids or not set(ids) <= known:
+    async def entities(self, owner, ids, *, known_episode_ids=None):
+        # Internal callers may reuse IDs from an already owner-verified episode lookup.
+        if known_episode_ids is None:
+            known_episode_ids = {e['uuid'] for e in await self.episodes(owner)}
+        if not ids or not set(ids) <= known_episode_ids:
             raise MemoryErrorCode('MEMORY_INVALID_TARGET')
         value = await self.mcp.call('get_episode_entities', {'episode_uuids': ids, 'group_id': owner})
         if any(e.get('group_id') != owner for e in value.get('edges', []) + value.get('nodes', [])):
@@ -290,6 +306,7 @@ class GraphitiProvider:
             return json.loads(op['result'])
         async def receipt():
             return next((e for e in await self.episodes(job['owner']) if e['name'] == marker), None)
+        receipt_epoch = self.mcp.epoch
         episode = await receipt()
         metadata = json.loads(op['result']) if op and op['result'] else {}
         error_offset = metadata.get('error_offset',getattr(self.mcp,'error_offset',lambda:0)())
@@ -306,22 +323,32 @@ class GraphitiProvider:
             masks = self.masks(job['owner'])
             if any(sid not in owned or ('episode',sid) in masks for sid in previous):
                 raise MemoryErrorCode('MEMORY_CONTEXT_UNAVAILABLE')
-        if not episode and (not op or op['epoch'] != self.mcp.epoch or op['state'] == 'upstream_failed'):
-            error_offset = getattr(self.mcp,'error_offset',lambda:0)()
-            # Record before enqueue: a lost acknowledgement must never cause a second write in the same process.
-            with self.queue.connect() as c:
-                c.execute('INSERT OR REPLACE INTO mcp_operations VALUES (?,?,?,?,?,?)',
-                          (job['id'], call_id, marker, self.mcp.epoch, 'enqueuing',json.dumps({'error_offset':error_offset,'context_episode_ids':previous,'context_fact_ids':context_fact_ids or []})))
-            source = json.dumps({'component':'qwaudio-official-mcp', 'task_id':job['id'], 'session_id':job['session'],
-                                 'message_ids':source_ids or [], 'version':job['version'],
-                                 'context_fact_ids':context_fact_ids or [], 'context_episode_ids':previous}, ensure_ascii=False)
-            await self.mcp.call('add_memory', {'name':marker, 'episode_body':body if body.startswith('用户: ') else '用户: ' + body, 'group_id':job['owner'],
-                'source':'message', 'source_description':source, 'previous_episode_uuids':previous,
-                'reference_time': reference_time or datetime.fromtimestamp(job['created'], timezone.utc).isoformat()})
-            with self.queue.connect() as c:
-                c.execute("UPDATE mcp_operations SET state='awaiting_commit' WHERE job=? AND call_id=?", (job['id'], call_id))
+        if not episode:
+            # Keep the ledger epoch and the MCP process that accepts the write in sync.
+            async with self._mcp_epoch_lock:
+                await self._wait_for_mcp_restart(job['owner'])
+                if receipt_epoch != self.mcp.epoch:
+                    episode = await receipt()
+                if not episode and (not op or op['epoch'] != self.mcp.epoch or op['state'] == 'upstream_failed'):
+                    error_offset = getattr(self.mcp,'error_offset',lambda:0)()
+                    # Record before enqueue so a lost acknowledgement cannot cause a duplicate submission.
+                    with self.queue.connect() as c:
+                        c.execute('INSERT OR REPLACE INTO mcp_operations VALUES (?,?,?,?,?,?)',
+                                  (job['id'], call_id, marker, self.mcp.epoch, 'enqueuing',json.dumps({'error_offset':error_offset,'context_episode_ids':previous,'context_fact_ids':context_fact_ids or []})))
+                    source = json.dumps({'component':'qwaudio-official-mcp', 'task_id':job['id'], 'session_id':job['session'],
+                                         'message_ids':source_ids or [], 'version':job['version'],
+                                         'context_fact_ids':context_fact_ids or [], 'context_episode_ids':previous}, ensure_ascii=False)
+                    await self.mcp.call('add_memory', {'name':marker, 'episode_body':body if body.startswith('用户: ') else '用户: ' + body, 'group_id':job['owner'],
+                        'source':'message', 'source_description':source, 'previous_episode_uuids':previous,
+                        'reference_time': reference_time or datetime.fromtimestamp(job['created'], timezone.utc).isoformat()})
+                    with self.queue.connect() as c:
+                        c.execute("UPDATE mcp_operations SET state='awaiting_commit' WHERE job=? AND call_id=?", (job['id'], call_id))
+        confirmation_epoch = self.mcp.epoch
         deadline = time.monotonic() + float(os.environ.get('GRAPHITI_CONFIRM_TIMEOUT', '240'))
         while episode is None:
+            if confirmation_epoch != self.mcp.epoch:
+                # A fence may have interrupted the official queue. Retry from the stored marker.
+                raise MemoryErrorCode('MCP_TOOL_FAILED')
             failed = getattr(self.mcp,'failed_queue_code',lambda owner,offset:None)(job['owner'],error_offset)
             if failed:
                 with self.queue.connect() as c:
@@ -333,7 +360,8 @@ class GraphitiProvider:
                 raise MemoryErrorCode('MCP_WRITE_UNCONFIRMED')
             await asyncio.sleep(.5)
             episode = await receipt()
-        graph = await self.entities(job['owner'], [episode['uuid']])
+        episode_ids = [episode['uuid']]
+        graph = await self.entities(job['owner'], episode_ids, known_episode_ids=set(episode_ids))
         result = {'status':'committed', 'episode_id':episode['uuid'], 'fact_ids':[e['uuid'] for e in graph['edges']],
                   'node_ids':[n['uuid'] for n in graph['nodes']], 'empty':not bool(graph['edges']),
                   'outcome':'facts_committed' if graph['edges'] else 'no_facts_extracted',
@@ -354,30 +382,8 @@ class GraphitiProvider:
         with self.queue.connect() as c:
             retired = {r[0] for r in c.execute('SELECT message_id FROM retired_sources WHERE owner=?', (job['owner'],))}
         return [{**m, 'id':m.get('id') or f"{job['id']}:{i}"} for i,m in enumerate(messages)
-                if m.get('role') in ('user','assistant') and isinstance(m.get('content'),str)
+                if isinstance(m, dict) and m.get('role') in ('user','assistant') and isinstance(m.get('content'),str)
                 and m.get('id') not in retired and float(m.get('created_at') or job['created']*1000) > cutoff]
-
-    def tools(self):
-        result = []
-        for name in sorted(READ_TOOLS):
-            tool = self.mcp.tools[name]
-            schema = json.loads(json.dumps(tool.input_schema))
-            for key in ('group_id', 'group_ids'):
-                schema.get('properties', {}).pop(key, None)
-                if key in schema.get('required', []):
-                    schema['required'].remove(key)
-            result.append({'type':'function', 'function':{'name':name, 'description':tool.description, 'parameters':schema}})
-        result.append(function('read_conversation', '分页读取当前已结束连接的有序对话。offset 是消息序号，char_offset 用于继续读取长消息。不会读取其他会话。',
-            {'offset':{'type':'integer','minimum':0}, 'char_offset':{'type':'integer','minimum':0}}, ['offset']))
-        evidence = {'type':'array','minItems':1,'items':{'type':'object','properties':{
-            'message_id':{'type':'string'},'excerpt':{'type':'string'}},'required':['message_id','excerpt'],'additionalProperties':False}}
-        result.append(function('add_memory', '将合格的用户原文交给官方 MCP 建图。evidence 只能引用 read_conversation 中用户消息的逐字片段。依赖前文对象的省略表达，应使用 context_fact_ids 关联本任务检索得到的来源；不要凭相似主题猜测对象。先检索去重。',
-            {'evidence':evidence,'context_fact_ids':{'type':'array','items':{'type':'string'},'maxItems':8,
-             'description':'仅当当前原文依赖前文才能确定对象时，引用本任务已检索到的事实 ID 作为上下文。明确新对象可省略；存在多个合理对象时不得猜选。'}}, ['evidence']))
-        result.append(function('maintain_memory', '执行用户明确要求的更正或遗忘。目标必须是本轮检索到且唯一确定的事实 ID。歧义时不执行，记录无法确认。',
-            {'action':{'type':'string','enum':['correct','forget']},'fact_ids':{'type':'array','items':{'type':'string'},'minItems':1},
-             'request_message_id':{'type':'string'},'evidence':{**evidence,'description':'更正时提供新值的用户原文证据；遗忘时可省略。'}}, ['action','fact_ids','request_message_id']))
-        return result
 
     def evidence(self, messages, pieces):
         selected = []
@@ -422,149 +428,218 @@ class GraphitiProvider:
             value['episodes'] = [e for e in value.get('episodes',[]) if ('episode',e['uuid']) not in hidden]
         return value
 
+    def selection_plan(self, source, candidates):
+        if not isinstance(candidates, list) or len(candidates) > 12:
+            raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+        plan, seen = [], set()
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or candidate.get('action') not in ('remember', 'correct', 'forget'):
+                raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+            action = candidate['action']
+            allowed = {'action', 'evidence', 'context'} if action == 'remember' else {'action', 'evidence', 'request', 'target'}
+            if candidate.keys() - allowed:
+                raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+            pieces = candidate.get('evidence', [])
+            if not isinstance(pieces, list) or len(pieces) > 4 or any(
+                not isinstance(piece, dict) or set(piece) != {'message_id', 'excerpt'}
+                or not all(isinstance(piece[k], str) for k in piece) for piece in pieces
+            ):
+                raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+            try:
+                if any(PRIVATE_EVIDENCE.search(piece['excerpt']) for piece in pieces):
+                    continue
+                if any(m['role'] == 'user' and DO_NOT_SAVE.search(m['content'])
+                       and any(piece['message_id'] == m['id'] for piece in pieces) for m in source):
+                    continue
+                pieces = list({(piece['message_id'], piece['excerpt']): piece for piece in pieces}.values())
+                body, stamp, ids = self.evidence(source, pieces) if action != 'forget' else ('', None, [])
+            except MemoryErrorCode:
+                # A malformed candidate cannot turn assistant text or a paraphrase into evidence.
+                continue
+            entry = {'action': action, 'body': body, 'stamp': stamp, 'ids': ids}
+            if action == 'remember':
+                context = candidate.get('context', '')
+                if not isinstance(context, str) or len(context) > 200:
+                    raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+                context = context.strip()
+                if context and not any(m['role'] == 'user' and context in m['content'] for m in source):
+                    continue
+                entry['target'] = context
+            else:
+                request = candidate.get('request')
+                target = candidate.get('target')
+                if (not isinstance(request, dict) or set(request) != {'message_id', 'excerpt'}
+                    or not all(isinstance(request[k], str) for k in request)
+                    or not isinstance(target, str) or not 2 <= len(target.strip()) <= 200):
+                    raise MemoryErrorCode('MEMORY_SELECTION_INVALID')
+                try:
+                    self.evidence(source, [request])
+                except MemoryErrorCode:
+                    continue
+                target = target.strip()
+                # Only explicit, affirmative requests can delete or replace a fact.
+                prefix = r'^(?:请|帮我|请帮我)?(?:忘掉|忘记|删除|清除)' if action == 'forget' else r'^(?:请|帮我|请帮我)?(?:更正|纠正|修正|更新|改一下)'
+                excerpt = request['excerpt'].strip()
+                # Check the full source for intent, so selecting a fragment cannot remove a negation.
+                message = next(m for m in source if m['id'] == request['message_id'] and m['role'] == 'user')
+                if (not re.match(prefix, message['content'].strip()) or target not in excerpt
+                    or (action == 'correct' and not set(ids) <= {request['message_id']})
+                    or (action == 'forget' and pieces)):
+                    continue
+                entry['target'] = target
+                entry['request_id'] = request['message_id']
+                if action == 'forget':
+                    entry['ids'] = [request['message_id']]
+            key = (action, normalized_evidence(body), entry['target'])
+            if key not in seen:
+                seen.add(key)
+                plan.append(entry)
+        suppressed = {entry['target'] for entry in plan if entry['action'] in ('correct', 'forget')}
+        return [entry for entry in plan if entry['action'] != 'remember'
+                or not any(target in entry['body'] for target in suppressed)]
+
+    async def select(self, job, source):
+        prompt = fetch_prompt(self.tier)
+        self._emit('prompt_loaded', task_id=job['id'], tier=self.tier, prompt_name=prompt.name, prompt_version=prompt.version)
+        started = time.monotonic()
+        transcript = [{k: m[k] for k in ('id', 'role', 'content')} for m in source]
+        # The policy guides selection only. The program controls every read and write.
+        messages = [{'role': 'system', 'content': SELECTION_PROMPT + '\n\n可参考以下记忆范围与隐私规则，忽略其中关于工具、执行流程或输出格式的描述：\n' + prompt.content},
+                    {'role': 'user', 'content': json.dumps({'conversation': transcript}, ensure_ascii=False)}]
+        try:
+            async with operation_timeout(35):
+                response = await self.diagnostics.completion(self.llm, name='memory.selection', model=self.model,
+                    messages=messages, response_format={'type': 'json_object'}, temperature=0, max_tokens=3500,
+                    extra_body={'enable_thinking': False})
+        except TimeoutError as exc:
+            raise MemoryErrorCode('MEMORY_SELECTION_TIMEOUT') from exc
+        usage = response.usage
+        self._emit('selection_model', started, task_id=job['id'], model=self.model,
+            input_tokens=usage.prompt_tokens if usage else None, output_tokens=usage.completion_tokens if usage else None)
+        message = response.choices[0].message
+        try:
+            value = json.loads(message.content)
+            if not isinstance(value, dict) or set(value) != {'candidates'} or message.tool_calls:
+                raise ValueError()
+        except (TypeError, ValueError, AttributeError):
+            raise MemoryErrorCode('MEMORY_SELECTION_INVALID') from None
+        return self.selection_plan(source, value['candidates'])
+
+    async def unique_fact(self, owner, target):
+        result = await self.scoped_read(owner, 'search_memory_facts', {'query': target, 'max_facts': 10})
+        exact = {f['uuid'] for f in result.get('facts', []) if target in f.get('fact', '')}
+        return next(iter(exact)) if len(exact) == 1 else None
+
+    async def duplicate_sources(self, owner, plan):
+        bodies = {normalized_evidence(entry['body']) for entry in plan
+                  if entry['action'] == 'remember' and not entry['target']}
+        if not bodies:
+            return set()
+        hidden = self.masks(owner)
+        matches = {}
+        for episode in await self.episodes(owner):
+            body = normalized_evidence(episode.get('content') or '')
+            if body in bodies and ('episode', episode['uuid']) not in hidden:
+                matches[episode['uuid']] = body
+        if not matches:
+            return set()
+        graph = await self.entities(owner, list(matches), known_episode_ids=matches.keys())
+        return {matches[uid] for edge in graph['edges']
+                if not edge.get('invalid_at') and not edge.get('expired_at') and ('fact', edge['uuid']) not in hidden
+                for uid in edge.get('episodes', []) if uid in matches}
+
     async def agent(self, job, payload):
         source = self.messages(job, payload)
-        if not any(m['role']=='user' for m in source):
-            return {'action':'none', 'reason':'retired_source'}
+        if not any(m['role'] == 'user' for m in source):
+            return {'action': 'none', 'reason': 'retired_source'}
         with self.queue.connect() as c:
-            run = c.execute('SELECT * FROM mcp_runs WHERE job=?', (job['id'],)).fetchone()
-        if run:
-            history = json.loads(run['messages'])
+            saved = c.execute('SELECT messages FROM mcp_runs WHERE job=?', (job['id'],)).fetchone()
+            mutations = c.execute('SELECT call_id,plan FROM mcp_mutations WHERE job=?', (job['id'],)).fetchall()
+        cached = json.loads(saved['messages']) if saved else None
+        if isinstance(cached, dict) and cached.get('format') == 'selection-v1':
+            plan = cached['plan']
         else:
-            prompt_record = fetch_prompt(self.tier)
-            self._emit('prompt_loaded', task_id=job['id'], tier=self.tier, prompt_name=prompt_record.name, prompt_version=prompt_record.version)
-            history = [
-            {'role':'system','content':prompt_record.content},
-            {'role':'user','content':json.dumps({'task_id':job['id'], 'session_id':job['session'],
-                'message_count':len(source), 'instruction':'读取本任务的完整对话后，检索并维护合格记忆。所有执行结果只做后台记录。'}, ensure_ascii=False)}]
-        step = run['step'] if run else 0
-        def save():
+            plan = await self.select(job, source)
+            # Persist before the first Graphiti operation so retry never reselects.
             with self.queue.connect() as c:
-                c.execute('INSERT OR REPLACE INTO mcp_runs VALUES (?,?,?)', (job['id'],json.dumps(history,ensure_ascii=False),step))
-        completed = {m['tool_call_id'] for m in history if m['role']=='tool'}
-        # Reconstruct the IDs exposed by prior reads, including after a process crash.
-        known = set()
-        def collect(value):
-            if isinstance(value, dict):
-                if value.get('fact') and value.get('uuid'):
-                    known.add(value['uuid'])
-                for item in value.values():
-                    collect(item)
-            elif isinstance(value,list):
-                for item in value:
-                    collect(item)
-        for m in history:
-            if m['role']=='tool':
-                try: collect(json.loads(m['content']))
-                except ValueError: pass
-        # Continue until the model finishes; step is a persisted progress counter.
-        while True:
-            pending = [call for m in history if m['role']=='assistant' for call in m.get('tool_calls',[]) if call['id'] not in completed]
-            if not pending:
-                started = time.monotonic()
-                response = await self.diagnostics.completion(self.llm, name="memory.agent", model=self.model, messages=history,
-                    tools=self.tools(), temperature=0, extra_body={'enable_thinking':False})
-                usage = response.usage
-                self._emit('agent_model', started, task_id=job['id'], model=self.model,
-                    input_tokens=usage.prompt_tokens if usage else None, output_tokens=usage.completion_tokens if usage else None)
-                message = response.choices[0].message.model_dump(exclude_none=True)
-                history.append(message)
-                step += 1
-                save()
-                if not message.get('tool_calls'):
-                    with self.queue.connect() as c:
-                        receipts = c.execute('SELECT result FROM mcp_operations WHERE job=? AND state=?', (job['id'],'committed')).fetchall()
-                    with self.queue.connect() as c:
-                        mutations = c.execute('SELECT plan FROM mcp_mutations WHERE job=?',(job['id'],)).fetchall()
-                    operations = [json.loads(r[0]) for r in receipts]
-                    has_facts = any(value.get('fact_ids') for value in operations)
-                    changed_action = ('correct' if json.loads(mutations[-1][0])['replacement'] else 'forget') if mutations else ('remember' if has_facts else 'none')
-                    return {'action':changed_action,
-                            'outcome':'no_facts_extracted' if operations and not has_facts and not mutations else 'completed',
-                            'operations':operations, 'agent_steps':step}
-                pending = message['tool_calls']
-            for call in pending:
-                name = call['function']['name']
-                args = json.loads(call['function']['arguments'])
-                started = time.monotonic()
-                with self.diagnostics.span('agent.tool.'+name,kind='tool',input=args,
-                        metadata={'operation_id':call['id']}) as tool_observation:
-                    try:
-                        if name == 'read_conversation':
-                            offset, char = args.get('offset',0), args.get('char_offset',0)
-                            if not isinstance(offset,int) or not isinstance(char,int) or offset < 0 or char < 0:
-                                raise MemoryErrorCode('MEMORY_INVALID_OFFSET')
-                            page, budget, next_char = [], 12000, 0
-                            i = offset
-                            while i < len(source) and budget > 0:
-                                message = source[i]
-                                text = message['content'][char:char+budget]
-                                page.append({**message, 'content':text, 'char_offset':char})
-                                budget -= len(text)
-                                if char+len(text) < len(message['content']):
-                                    next_char = char+len(text)
-                                    break
-                                i += 1
-                                char = 0
-                            value = {'messages':page, 'next_offset':i if i<len(source) else None, 'next_char_offset':next_char,
-                                     'total_messages':len(source)}
-                        elif name in READ_TOOLS:
-                            value = await self.scoped_read(job['owner'], name, args)
-                            collect(value)
-                        elif name == 'add_memory':
-                            body, stamp, ids = self.evidence(source, args['evidence'])
-                            with self.queue.connect() as c:
-                                retired = {r[0] for r in c.execute('SELECT message_id FROM retired_sources WHERE owner=?',(job['owner'],))}
-                            if set(ids) & retired or self.queue.status(job['owner'])['generation'] != job['generation']:
-                                raise MemoryErrorCode('MEMORY_EVIDENCE_INVALID')
-                            # The model may repeat an identical tool request with a new call ID.
-                            # Bind the write to its exact source evidence, not that generated ID.
-                            context_ids = sorted(set(args.get('context_fact_ids') or []))
-                            if not set(context_ids) <= known:
-                                raise MemoryErrorCode('MEMORY_INVALID_TARGET')
-                            identity = {'body':body,'reference_time':stamp,'message_ids':ids}
-                            # Preserve operation keys accepted by the previous release.
-                            if context_ids:
-                                identity['context_fact_ids'] = context_ids
-                            operation = 'source-' + hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
-                            value = await self.add(job, operation, body, reference_time=stamp, source_ids=ids,context_fact_ids=context_ids)
-                        elif name == 'maintain_memory':
-                            if args.get('action') not in ('correct','forget'):
-                                raise MemoryErrorCode('MEMORY_TOOL_DENIED')
-                            if not set(args['fact_ids']) <= known:
-                                raise MemoryErrorCode('MEMORY_INVALID_TARGET')
-                            request = next((m for m in source if m['id']==args['request_message_id'] and m['role']=='user'),None)
-                            if not request:
-                                raise MemoryErrorCode('MEMORY_EVIDENCE_INVALID')
-                            if args['action']=='correct':
-                                body, stamp, ids = self.evidence(source, args.get('evidence',[]))
-                            else:
-                                body, ids = None, [request['id']]
-                            value = await self.mutate(job, call['id'], args['fact_ids'],
-                                replacement=body, source_ids=ids)
-                        else:
-                            raise MemoryErrorCode('MEMORY_TOOL_DENIED')
-                    except MemoryErrorCode as exc:
-                        # Structural validation can be corrected by the agent. Infrastructure errors fail the job.
-                        if str(exc) not in ('MEMORY_EVIDENCE_INVALID','MEMORY_INVALID_TARGET','MEMORY_TOOL_DENIED',
-                                            'MEMORY_TOOL_LIMIT','MEMORY_OWNER_OVERRIDE_DENIED','MEMORY_INVALID_OFFSET',
-                                            'MEMORY_CONTEXT_UNAVAILABLE','MEMORY_CONTEXT_LIMIT'):
-                            raise
-                        value = {'error':str(exc)}
-                    tool_observation.update(output=value, **({'error':value['error']} if value.get('error') else {}))
-                history.append({'role':'tool', 'tool_call_id':call['id'], 'content':json.dumps(value,ensure_ascii=False)})
-                completed.add(call['id'])
-                save()
-                self._emit('agent_tool', started, task_id=job['id'], tool=name, status='failed' if 'error' in value else 'succeeded')
+                c.execute('INSERT OR REPLACE INTO mcp_runs VALUES (?,?,1)',
+                    (job['id'], json.dumps({'format': 'selection-v1', 'plan': plan}, ensure_ascii=False)))
+
+        # Complete previously persisted mutations using the existing recovery plan.
+        changed = None
+        for mutation in mutations:
+            previous = json.loads(mutation['plan'])
+            result = await self.mutate(job, mutation['call_id'], previous['ids'],
+                replacement=previous['replacement'], source_ids=previous['source_ids'])
+            changed = result['action']
+
+        duplicates = await self.duplicate_sources(job['owner'], plan)
+        operations = []
+        for entry in plan:
+            action, target = entry['action'], entry['target']
+            body, stamp, ids = entry['body'], entry['stamp'], entry['ids']
+            with self.queue.connect() as c:
+                retired = {r[0] for r in c.execute('SELECT message_id FROM retired_sources WHERE owner=?',(job['owner'],))}
+            if set(ids) & retired:
+                continue
+            if action == 'remember':
+                context = []
+                if target:
+                    found = await self.unique_fact(job['owner'], target)
+                    if found is None:
+                        continue
+                    context = [found]
+                operation = source_operation(body, stamp, ids, context)
+                with self.queue.connect() as c:
+                    submitted = c.execute('SELECT 1 FROM mcp_operations WHERE job=? AND call_id=?',
+                        (job['id'],operation)).fetchone()
+                if not submitted and not target and normalized_evidence(body) in duplicates:
+                    continue
+                operations.append(await self.add(job, operation, body, reference_time=stamp,
+                    source_ids=ids, context_fact_ids=context))
+            else:
+                operation = 'maintenance-' + source_operation(body, stamp, [entry['request_id'], action, target])
+                if any(row['call_id'] == operation for row in mutations):
+                    continue
+                found = await self.unique_fact(job['owner'], target)
+                if found is None:
+                    continue
+                result = await self.mutate(job, operation, [found], replacement=body or None, source_ids=ids)
+                changed = result['action']
+        # Include factual receipts from a task begun by the previous release.
+        with self.queue.connect() as c:
+            receipts = c.execute('SELECT result FROM mcp_operations WHERE job=? AND state=?', (job['id'], 'committed'))
+            for receipt in receipts:
+                value = json.loads(receipt['result'])
+                if value not in operations:
+                    operations.append(value)
+        has_facts = any(value.get('fact_ids') for value in operations)
+        return {'action': changed or ('remember' if has_facts else 'none'),
+                'outcome': 'no_facts_extracted' if operations and not has_facts and not changed else 'completed',
+                'operations': operations, 'agent_steps': 1}
 
     async def fence_inflight(self, owner, current_job):
-        with self.queue.connect() as c:
-            uncertain = c.execute(
-                "SELECT 1 FROM mcp_operations o JOIN jobs j ON j.id=o.job WHERE j.owner=? AND j.id!=? AND o.state!='committed' AND o.epoch=? LIMIT 1",
-                (owner,current_job,self.mcp.epoch)).fetchone()
-        if uncertain:
-            await self.mcp.restart()
-            self._emit('upstream_restart_fence',owner_hash=owner)
+        async with self._mcp_epoch_lock:
+            await self._wait_for_mcp_restart(owner)
+            with self.queue.connect() as c:
+                uncertain = c.execute(
+                    "SELECT 1 FROM mcp_operations o JOIN jobs j ON j.id=o.job WHERE j.owner=? AND j.id!=? AND o.state!='committed' AND o.epoch=? LIMIT 1",
+                    (owner,current_job,self.mcp.epoch)).fetchone()
+            if uncertain:
+                await self._restart_mcp(owner)
+
+    async def _restart_mcp(self, owner):
+        # Keep the shared subprocess supervised if its owner job is cancelled or expires.
+        self._mcp_restart = asyncio.create_task(self.mcp.restart())
+        await asyncio.shield(self._mcp_restart)
+        self._emit('upstream_restart_fence',owner_hash=owner)
+
+    async def _wait_for_mcp_restart(self, owner):
+        if self._mcp_restart is not None:
+            if self._mcp_restart.done() and self._mcp_restart.exception() is not None:
+                await self._restart_mcp(owner)
+            else:
+                await asyncio.shield(self._mcp_restart)
 
     async def mutate(self, job, call_id, ids, replacement=None, source_ids=None):
         owner = job['owner']
@@ -583,8 +658,9 @@ class GraphitiProvider:
             episodes = {e['uuid']:e for e in await self.episodes(owner)}
             if not set(old_sources) <= episodes.keys():
                 raise MemoryErrorCode('MEMORY_PROVENANCE_REQUIRED')
-            graph = await self.entities(owner, old_sources)
-            survivors = [e['fact'] for e in graph['edges'] if e['uuid'] not in ids and not e.get('invalid_at')]
+            graph = await self.entities(owner, old_sources, known_episode_ids=episodes.keys())
+            survivors = [e['fact'] for e in graph['edges'] if e['uuid'] not in ids
+                         and not e.get('invalid_at') and not e.get('expired_at')]
             if any(len(f)>16000 for f in survivors):
                 raise MemoryErrorCode('MEMORY_SURVIVOR_TOO_LONG')
             retired = []
@@ -632,7 +708,13 @@ class GraphitiProvider:
                 'removed_episode_ids':plan['sources'], 'preserved_facts':len(plan['survivors'])}
 
     async def process_one(self, owner):
-        async with self.queue.lock(owner):
+        async with AsyncExitStack() as owner_lock:
+            try:
+                async with operation_timeout(.2):
+                    await owner_lock.enter_async_context(self.queue.lock(owner))
+            except TimeoutError:
+                # Another process owns the lane. Give the scheduler slot back.
+                return False
             job = self.queue.claim(owner)
             if not job:
                 return False
@@ -643,30 +725,33 @@ class GraphitiProvider:
                     'user_id':owner,'session_id':job['session'],'task_id':job['id'],
                     'version':job['version'],'generation':job['generation']}) as observation:
                 started = time.monotonic()
+                epoch = self.mcp.epoch
+                deadline = operation_timeout(self.config.get('write_timeout_ms', 300_000) / 1000)
                 try:
-                    if not job['payload']:
-                        raise MemoryErrorCode('MEMORY_TASK_RETIRED')
-                    payload = json.loads(job['payload'])
-                    if job['kind']=='observe':
-                        result = await self.agent(job,payload)
-                    elif job['kind']=='remember':
-                        result = await self.add(job,'explicit',payload['content'])
-                        result['action'] = 'none' if result['empty'] else 'remember'
-                    elif job['kind'] in ('correct','forget'):
-                        result = await self.mutate(job,'explicit',payload['fact_ids'],
-                            replacement=payload['content'] if job['kind']=='correct' else None)
-                    elif job['kind']=='clear':
-                        # All writes are serialized by owner. Clearing retires all earlier operations.
-                        await self.fence_inflight(owner,job['id'])
-                        await self.mcp.call('clear_graph', {'group_ids':[owner]})
-                        self.queue.erase_before(owner,job['version'])
-                        with self.queue.connect() as c:
-                            for table in ('mcp_runs','mcp_mutations','mcp_operations'):
-                                c.execute(f'DELETE FROM {table} WHERE job IN (SELECT id FROM jobs WHERE owner=?)',(owner,))
-                            c.execute('DELETE FROM mcp_masks WHERE owner=?',(owner,))
-                        result = {'action':'clear'}
-                    else:
-                        raise MemoryErrorCode('MEMORY_INVALID_ACTION')
+                    async with deadline:
+                        if not job['payload']:
+                            raise MemoryErrorCode('MEMORY_TASK_RETIRED')
+                        payload = json.loads(job['payload'])
+                        if job['kind']=='observe':
+                            result = await self.agent(job,payload)
+                        elif job['kind']=='remember':
+                            result = await self.add(job,'explicit',payload['content'])
+                            result['action'] = 'none' if result['empty'] else 'remember'
+                        elif job['kind'] in ('correct','forget'):
+                            result = await self.mutate(job,'explicit',payload['fact_ids'],
+                                replacement=payload['content'] if job['kind']=='correct' else None)
+                        elif job['kind']=='clear':
+                            # All writes are serialized by owner. Clearing retires all earlier operations.
+                            await self.fence_inflight(owner,job['id'])
+                            await self.mcp.call('clear_graph', {'group_ids':[owner]})
+                            self.queue.erase_before(owner,job['version'])
+                            with self.queue.connect() as c:
+                                for table in ('mcp_runs','mcp_mutations','mcp_operations'):
+                                    c.execute(f'DELETE FROM {table} WHERE job IN (SELECT id FROM jobs WHERE owner=?)',(owner,))
+                                c.execute('DELETE FROM mcp_masks WHERE owner=?',(owner,))
+                            result = {'action':'clear'}
+                        else:
+                            raise MemoryErrorCode('MEMORY_INVALID_ACTION')
                     if observation.trace_id:
                         result['diagnostic_trace_id'] = observation.trace_id
                     observation.update(output=result)
@@ -674,13 +759,17 @@ class GraphitiProvider:
                     with self.queue.connect() as c:
                         c.execute('DELETE FROM mcp_runs WHERE job=?',(job['id'],))
                         c.execute('DELETE FROM mcp_mutations WHERE job=?',(job['id'],))
-                    self.error = None
                     self._emit('completed',started,task_id=job['id'],version=job['version'],action=result['action'])
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     code,retry = error_code(exc)
-                    self.error = code
+                    if deadline.expired:
+                        code, retry = 'GRAPHITI_WRITE_TIMEOUT', False
+                    elif code == 'GRAPHITI_UNAVAILABLE' and (
+                        epoch != self.mcp.epoch or (self._mcp_restart is not None and not self._mcp_restart.done())
+                    ):
+                        retry = True
                     observation.update(error=code)
                     self.queue.fail(job,code,retry)
                     self._emit('failed',started,code,task_id=job['id'],diagnostic_trace_id=observation.trace_id,error_class=type(exc).__name__,
@@ -688,17 +777,33 @@ class GraphitiProvider:
                 return True
 
     async def run(self):
-        while True:
-            try:
-                for owner in self.queue.owners():
-                    await self.process_one(owner)
-                await asyncio.sleep(.2)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.error = 'MEMORY_QUEUE_UNAVAILABLE'
-                self._emit('queue_failed',code=self.error,error_class=type(exc).__name__)
-                await asyncio.sleep(1)
+        active = {}
+        waiting = {}
+        try:
+            while True:
+                try:
+                    for owner, task in list(active.items()):
+                        if task.done():
+                            del active[owner]
+                            task.result()
+                    for owner in self.queue.owners():
+                        if owner not in active:
+                            waiting.setdefault(owner, None)
+                    while waiting and len(active) < MAX_ACTIVE_OWNERS:
+                        owner = next(iter(waiting))
+                        del waiting[owner]
+                        active[owner] = asyncio.create_task(self.process_one(owner))
+                    await asyncio.sleep(.2)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.error = 'MEMORY_QUEUE_UNAVAILABLE'
+                    self._emit('queue_failed',code=self.error,error_class=type(exc).__name__)
+                    await asyncio.sleep(1)
+        finally:
+            for task in active.values():
+                task.cancel()
+            await asyncio.gather(*active.values(), return_exceptions=True)
 
     async def classify(self, text):
         response = await self.diagnostics.completion(self.llm, name="memory.classify", model=self.model,temperature=0,
@@ -710,9 +815,12 @@ class GraphitiProvider:
         return {'kind':value['kind']}
 
     async def close(self):
+        self.enabled = False
         if self._runner:
             self._runner.cancel()
             await asyncio.gather(self._runner,return_exceptions=True)
+        if self._mcp_restart:
+            await asyncio.gather(self._mcp_restart, return_exceptions=True)
         await self.llm.close()
         await self.mcp.close()
         await asyncio.to_thread(self.diagnostics.flush)
