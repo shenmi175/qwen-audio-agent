@@ -8,10 +8,10 @@
 - 152 项 Node 回归通过：提示词快照、编辑版本冲突、输入校验、工具反馈、Qwen/OpenAI 协议档案。
 - 41 项 Python 记忆/MCP 回归通过；新增图谱提示词热读取及空内容拒绝测试另行通过。
 - Web 生产构建通过；浏览器验证设置入口、五个用途 Tab、草稿保留、保存、刷新后持久化。
-- 使用隔离身份自然陈述“我叫甄彤岚。”：OpenAI 后台写入并查询到原名，14.96 秒。
-- Qwen 更正为“甄桐岚”：新会话只查询到新名，18.87 秒。
+- 使用隔离身份自然陈述“我叫测试用户甲。”：OpenAI 后台写入并查询到原名，14.96 秒。
+- Qwen 更正为“测试用户乙”：新会话只查询到新名，18.87 秒。
 - OpenAI 遗忘：新会话查询为空，4.72 秒。三步总测试 41.30 秒。
-- 新版提示词真实语音：同一批中文 PCM，普通陈述“我养的猫叫银杏布丁。”，关闭会话后一次筛选自动写入；新会话询问宠物名字，真实 memory read 命中，口播“你之前说它叫银杏布丁……”，收到 506400 字节输出音频。
+- 新版提示词真实语音：同一批中文 PCM，普通陈述“我养的猫叫测试宠物甲。”，关闭会话后一次筛选自动写入；新会话询问宠物名字，真实 memory read 命中，口播“你之前说它叫测试宠物甲……”，收到 506400 字节输出音频。
 - 两组隔离测试数据已清理；3102 测试网关退出；3101 health 的 connected / activeClients / realtime.connected 均为 0。
 
 这些耗时是后台维护耗时，不是语音首音延迟；本次不构成多样本 A/B 延迟基线或扬声器声学测量。
@@ -19,8 +19,8 @@
 
 ## 本机复测
 
-Node 可执行文件：`/Users/lucas/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node`。
-私有运行目录：`/Users/lucas/projets/conversation/.local-runtime/qwen-audio`。
+Node 可执行文件：`<node-bin>/node`。
+私有运行目录：`<private-runtime>/qwen-audio`。
 
 - 重启：用上述 Node 执行私有运行目录下 `switch-voice.mjs openai`（或 `qwen`）。
 - 记忆系列实测：执行 `verification/run-local-memory.mjs verify_model_families.py`。
