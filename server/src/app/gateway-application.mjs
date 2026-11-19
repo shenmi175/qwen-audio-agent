@@ -1,3 +1,5 @@
+import { OpenAIWebSearchProvider } from '../frontend/retrieval/providers/openai.mjs'
+import { resolveOpenAIWebSearchConfiguration } from '../../../shared/web-search-configuration.mjs'
 import { registerGatewayHttpRoutes } from './gateway-http-routes.mjs'
 import { optionalModuleFactories } from './optional-modules.mjs'
 import { OperationAudit } from '../core/operation-audit.mjs'
@@ -148,7 +150,15 @@ const inputAssetRegistry = inputAssets || new InputAssetRegistry({
   sessionTtlMs: config.conversationSessionTtlMs,
   maxSessions: config.maxConversationSessions,
 })
+const openAISearch = resolveOpenAIWebSearchConfiguration()
+const openAIProfile = config.realtimeProviderProfiles?.['gpt-live']
 const retrievalRuntime = frontendRetrieval || new FrontendRetrievalRuntime({
+  defaultRealtimeProvider: config.audioProvider,
+  ...(webSearchProvider === undefined ? { searchProviders: {
+    'gpt-live': new OpenAIWebSearchProvider({ ...openAISearch,
+      apiKey: openAIProfile?.credential || openAISearch.apiKey
+        || (config.audioProvider === 'gpt-live' ? config.realtimeCredential : '') }),
+  } } : {}),
   searchProvider: webSearchProvider === undefined
     ? createWebSearchProvider(config)
     : webSearchProvider,

@@ -38,6 +38,13 @@ function harness({
       outputSampleRate: 24000,
       classifyError: () => 'other',
     },
+    'gpt-live': {
+      key: 'gpt-live',
+      label: 'GPT-Live',
+      inputSampleRate: 24000,
+      outputSampleRate: 24000,
+      classifyError: () => 'other',
+    },
   }
   const providerRegistry = {
     resolve(name) {
@@ -280,6 +287,24 @@ test('switching providers detaches the old frontend without losing queued audio'
   frontends[1].resolveConnect()
   await replacement
   assert.equal(frontends[1].provider.key, 's2s')
+})
+
+test('switching to a provider with a different input rate drops audio buffered for the previous provider', async () => {
+  const { runtime, calls, frontends } = harness()
+  const connecting = runtime.ensure()
+  runtime.pendingAudio.push('PCM prepared at 16 kHz')
+
+  assert.equal(runtime.switchProvider('gpt-live'), true)
+  assert.deepEqual(runtime.pendingAudio, [])
+  frontends[0].resolveConnect()
+  await connecting
+  const replacement = runtime.ensure()
+  frontends[1].resolveConnect()
+  await replacement
+
+  assert.equal(runtime.provider().inputSampleRate, 24000)
+  assert.equal(calls.some(([name]) => name === 'appendAudio'), false)
+  runtime.close()
 })
 
 test('configuration validation errors use the existing fatal path without reconnecting', async () => {

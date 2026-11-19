@@ -8,6 +8,7 @@ from memory_queue import MemoryErrorCode
 TIERS = ("light", "medium", "advanced")
 DEFAULT_TIER = "medium"
 MODEL_ALIASES = {"light": "qwen-flash", "medium": "qwen-plus", "advanced": "qwen-max"}
+OPENAI_MODELS = {"light": "gpt-6-luna", "medium": "gpt-6.1-terra", "advanced": "gpt-6.1-sol"}
 
 @dataclass(frozen=True)
 class MemoryPrompt:
@@ -36,10 +37,12 @@ def selected_tier():
         raise MemoryErrorCode("MEMORY_INVALID_TIER")
     return value
 
-def tier_model(tier=None):
+def tier_model(tier=None, family="qwen"):
     tier = tier or selected_tier()
     if tier not in TIERS:
         raise MemoryErrorCode("MEMORY_INVALID_TIER")
+    if family == "openai":
+        return OPENAI_MODELS[tier]
     return os.environ.get("GRAPHITI_MEMORY_MODEL_" + tier.upper(), MODEL_ALIASES[tier])
 
 def fetch_prompt(tier=None):
@@ -55,3 +58,14 @@ def fetch_prompt(tier=None):
         raise MemoryErrorCode("MEMORY_PROMPT_INVALID")
     return MemoryPrompt(name="memory/observation/" + tier,
                         version=hashlib.sha256(content.encode()).hexdigest()[:12], content=content)
+
+
+def graph_extraction_prompt():
+    directory = Path(os.environ.get("QWAUDIO_PROMPTS_DIR") or Path(__file__).resolve().parents[2] / "runtime/prompts")
+    path = directory / "memory/graph-extraction.md"
+    if not path.exists():
+        path = Path(__file__).resolve().parents[2] / "config/prompts/memory/graph-extraction.md"
+    content = path.read_text(encoding="utf-8")
+    if not content.strip():
+        raise MemoryErrorCode("MEMORY_PROMPT_INVALID")
+    return content

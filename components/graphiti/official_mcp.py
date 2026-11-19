@@ -1,5 +1,6 @@
 """Unmodified official Graphiti server, accessed only through the MCP protocol."""
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -38,15 +39,30 @@ def upstream_error_code(message):
 
 
 class OfficialMCP:
-    def __init__(self, telemetry=None):
+    def __init__(self, telemetry=None, *, family='qwen', model=None, api_key=None, base_url=None):
+        if family not in ('qwen', 'openai'):
+            raise ValueError('Unsupported Graphiti model family')
+        if family == 'openai' and not model:
+            raise ValueError('An OpenAI Graphiti model is required')
         self.root = Path(__file__).resolve().parents[2]
         self.state = self.root / 'runtime/components/graphiti'
+        self.family = family
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url or ('https://api.openai.com/v1' if family == 'openai' else None)
         self.epoch = uuid.uuid4().hex
         self.stack = AsyncExitStack()
         self.session = None
         self.telemetry = telemetry or (lambda value:None)
         self.diagnostics = get_recorder()
         self.adapter = None
+
+    @property
+    def error_log(self):
+        if self.family == 'qwen' and self.model is None:
+            return self.state / 'official-mcp.private.log'
+        model_id = hashlib.sha256(self.model.encode()).hexdigest()[:16]
+        return self.state / f'official-mcp-{self.family}-{model_id}.private.log'
 
     async def initialize(self):
         self._ready = asyncio.get_running_loop().create_future()
@@ -65,12 +81,17 @@ class OfficialMCP:
             elif not isinstance(exc, asyncio.CancelledError):
                 self.failure = 'MCP_DISCONNECTED'
         finally:
-            await self.stack.aclose()
-            if self.adapter:
-                await self.adapter.close()
-                self.adapter = None
-            if hasattr(self, 'stderr'):
-                self.stderr.close()
+            try:
+                await self.stack.aclose()
+            finally:
+                self.session = None
+                try:
+                    if self.adapter:
+                        await self.adapter.close()
+                        self.adapter = None
+                finally:
+                    if hasattr(self, 'stderr'):
+                        self.stderr.close()
 
     async def restart(self):
         await self.close()
@@ -78,35 +99,53 @@ class OfficialMCP:
         self.epoch = uuid.uuid4().hex
         await self.initialize()
 
+    async def _child_environment(self):
+        env = {**os.environ, 'QWAUDIO_GRAPHITI_LLM_FAMILY': self.family}
+        if self.model is not None:
+            env['GRAPHITI_LLM_MODEL'] = self.model
+        if self.family == 'openai':
+            if not self.api_key:
+                raise MemoryErrorCode('GRAPHITI_AUTH_FAILED')
+            env.update(GRAPHITI_LLM_API_KEY=self.api_key, GRAPHITI_LLM_BASE_URL=self.base_url)
+            return env
+
+        from qwen_schema_adapter import QwenSchemaAdapter
+
+        client = None
+        if self.api_key is not None or self.base_url is not None:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=self.api_key or env['GRAPHITI_LLM_API_KEY'],
+                base_url=self.base_url or env['GRAPHITI_LLM_BASE_URL'], max_retries=0, timeout=90)
+        self.adapter = QwenSchemaAdapter(client=client, telemetry=self.telemetry)
+        await self.adapter.start()
+        env.update(GRAPHITI_LLM_BASE_URL=self.adapter.base_url, GRAPHITI_LLM_API_KEY=self.adapter.token)
+        return env
+
     async def _connect(self):
         # Context entry and exit must run in the same lifespan task.
-        from qwen_schema_adapter import QwenSchemaAdapter
-        self.adapter = await QwenSchemaAdapter(telemetry=self.telemetry).start()
-        child_env = {**os.environ, 'GRAPHITI_LLM_BASE_URL':self.adapter.base_url, 'GRAPHITI_LLM_API_KEY':self.adapter.token}
+        child_env = await self._child_environment()
         source = self.state / 'upstream/mcp_server'
-        self.stderr = open(self.state / 'official-mcp.private.log', 'a', encoding='utf-8')
-        os.chmod(self.stderr.name, 0o600)
-        try:
-            streams = await self.stack.enter_async_context(stdio_client(StdioServerParameters(
-                command=sys.executable,
-                args=[str(self.root / 'components/graphiti/mcp_launcher.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
-                      '--transport', 'stdio'],
-                cwd=str(source), env=child_env), errlog=self.stderr))
-            self.session = await self.stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=15))
-            await self.session.initialize()
-            self.tools = {t.name: t for t in (await self.session.list_tools()).tools}
-            await self.ready()
-        except BaseException:
-            raise
+        log_fd = os.open(self.error_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self.stderr = os.fdopen(log_fd, 'a', encoding='utf-8')
+        os.fchmod(log_fd, 0o600)
+        streams = await self.stack.enter_async_context(stdio_client(StdioServerParameters(
+            command=sys.executable,
+            args=[str(self.root / 'components/graphiti/mcp_launcher.py'), '--config', str(self.root / 'components/graphiti/mcp-config.yaml'),
+                  '--transport', 'stdio'],
+            cwd=str(source), env=child_env), errlog=self.stderr))
+        self.session = await self.stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=15))
+        await self.session.initialize()
+        self.tools = {t.name: t for t in (await self.session.list_tools()).tools}
+        await self.ready()
 
     def error_offset(self):
-        return (self.state / 'official-mcp.private.log').stat().st_size
+        return self.error_log.stat().st_size
 
     def failed_queue_code(self, owner, offset):
         # Official MCP has no task-status tool. Only a definitive, owner-scoped
         # queue-worker failure is classified; absent evidence stays unconfirmed.
-        path = self.state / 'official-mcp.private.log'
-        with path.open('rb') as stream:
+        with self.error_log.open('rb') as stream:
             stream.seek(offset)
             data = stream.read(1024 * 1024).decode('utf-8', errors='replace')
         prefix = 'Error processing queued episode for group_id '+owner+': '

@@ -3,9 +3,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { parseEnv } from 'node:util'
 import {
   BUILTIN_REALTIME_MODEL_CATALOGS,
   DASHSCOPE_AUDIO_31_FLASH_REALTIME_MODEL,
+  DEFAULT_GPT_LIVE_REALTIME_MODEL,
   resolveRealtimeModelProfile,
 } from '../shared/realtime-model-catalog.mjs'
 import { assertRealtimeFrontendModel, resolveRealtimeFrontendConfiguration } from '../shared/realtime-provider-catalog.mjs'
@@ -68,6 +70,37 @@ test('CLI lists and selects built-in Audio 3.1 Flash and rejects unsupported IDs
     return true
   })
   assert.equal(readFileSync(configPath, 'utf8'), content)
+})
+
+test('CLI reads and writes only the active provider model when profiles are enabled', t => {
+  const { directory } = fixture(t)
+  const configPath = join(directory, 'config.env')
+  const content = [
+    'QWEN_AUDIO_REALTIME_PROVIDER=openai',
+    'QWEN_AUDIO_REALTIME_PROFILES=qwen,gpt-live',
+    'QWEN_AUDIO_REALTIME_MODEL=qwen-audio-3.0-realtime-plus',
+    'QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_MODEL=qwen-audio-3.1-realtime-plus',
+    'QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_API_KEY=qwen-test-secret',
+    'QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_MODEL=mistyped-model',
+    'QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_API_KEY=openai-test-secret',
+    '',
+  ].join('\n')
+  writeFileSync(configPath, content)
+
+  assert.equal(resolveConfigModel({}, content), 'mistyped-model')
+  assert.equal(resolveConfigModel({}, content.replace('mistyped-model', '')), DEFAULT_GPT_LIVE_REALTIME_MODEL)
+  assert.equal(resolveConfigModel({ QWEN_AUDIO_REALTIME_PROVIDER: 'qwen' }, content), 'qwen-audio-3.1-realtime-plus')
+  assert.throws(() => updateRealtimeModelConfig(configPath, DASHSCOPE_AUDIO_31_FLASH_REALTIME_MODEL), /不支持/)
+  assert.equal(readFileSync(configPath, 'utf8'), content)
+
+  const selected = updateRealtimeModelConfig(configPath, DEFAULT_GPT_LIVE_REALTIME_MODEL)
+  assert.equal(selected.environment, 'QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_MODEL')
+  const updated = readFileSync(configPath, 'utf8')
+  assert.equal(updated, content.replace('mistyped-model', DEFAULT_GPT_LIVE_REALTIME_MODEL))
+  assert.equal(resolveRealtimeFrontendConfiguration(parseEnv(updated)).active.model, DEFAULT_GPT_LIVE_REALTIME_MODEL)
+  const shown = showConfig({ configPath })
+  assert.ok(shown.includes(`Realtime 模型：${DEFAULT_GPT_LIVE_REALTIME_MODEL}`))
+  assert.doesNotMatch(shown, /qwen-audio|test-secret/)
 })
 
 test('desktop saves built-in Flash and resolves the same fixed profile as the runtime', t => {

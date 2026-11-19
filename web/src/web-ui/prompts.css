@@ -1,0 +1,21 @@
+.prompt-page { height: 100dvh; overflow: auto; background: #08090b; color: #e8e9ec; padding: 36px max(24px, calc((100vw - 1080px) / 2)); font-family: system-ui, sans-serif; box-sizing: border-box; }
+.prompt-header { display: flex; align-items: center; gap: 20px; height: auto; padding: 0; background: none; border: 0; margin-bottom: 24px; }
+.prompt-header h1 { font-size: 24px; font-weight: 550; margin: 0; }
+.prompt-header a { color: inherit; font-size: 26px; text-decoration: none; }
+.prompt-header span { margin-left: auto; color: #858995; font-size: 13px; }
+.prompt-tabs { display: flex; gap: 6px; overflow-x: auto; border-bottom: 1px solid #272a31; padding-bottom: 12px; }
+.prompt-page button, .prompt-page select { color: inherit; background: #191c22; border: 1px solid #343843; border-radius: 9px; padding: 10px 16px; font: inherit; font-size: 14px; cursor: pointer; }
+.prompt-tabs button { background: transparent; border-color: transparent; white-space: nowrap; color: #9298a6; }
+.prompt-tabs [aria-selected="true"] { background: #222630; color: #f5f6f8; }
+.prompt-page button:focus-visible, .prompt-page a:focus-visible, .prompt-page select:focus-visible { outline: 2px solid #8eafff; outline-offset: 3px; }
+.prompt-toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 70px; font-size: 14px; }
+.prompt-toolbar > span:last-child { color: #9298a6; font-size: 12px; }
+.prompt-editor textarea { width: 100%; height: max(340px, calc(100dvh - 310px)); box-sizing: border-box; resize: vertical; border: 1px solid #343843; border-radius: 12px; background: #101216; color: #dce0e8; padding: 24px; font: 15px/1.9 ui-monospace, SFMono-Regular, monospace; outline: none; }
+.prompt-editor textarea:focus { border-color: #86a8f1; }
+.prompt-editor footer { display: flex; align-items: center; gap: 12px; padding-top: 18px; }
+.prompt-editor footer span { flex: 1; font-size: 13px; color: #a7aebb; }
+.prompt-page .prompt-save { background: #dce6fd; color: #141c2d; }
+.prompt-page button:disabled { opacity: .45; cursor: default; }
+.web-prompt-link { display: block; padding: 12px 16px; color: inherit; text-decoration: none; border-radius: 10px; }
+.web-prompt-link:hover { background: #ffffff10; }
+@media (max-width: 600px) { .prompt-page { padding: 24px 16px; } .prompt-header span { display: none; } .prompt-editor textarea { padding: 16px; } .prompt-editor footer { flex-wrap: wrap; } .prompt-editor footer span { flex-basis: 100%; } }

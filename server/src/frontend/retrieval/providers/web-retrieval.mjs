@@ -1,6 +1,7 @@
+import { OpenAIWebSearchProvider } from './openai.mjs'
 import { FrontendRetrievalRuntime } from '../frontend-retrieval-runtime.mjs'
 import { createWebSearchProvider } from './factory.mjs'
-import { resolveWebSearchConfiguration } from '../../../../../shared/web-search-configuration.mjs'
+import { resolveWebSearchConfiguration, resolveOpenAIWebSearchConfiguration } from '../../../../../shared/web-search-configuration.mjs'
 
 /**
  * Public, side-effect-free composition for a Gateway or standalone Agent.
@@ -16,6 +17,8 @@ export function createWebRetrieval({
 } = {}) {
   const config = resolveWebSearchConfiguration(env)
   return new FrontendRetrievalRuntime({
+    defaultRealtimeProvider: env.QWEN_AUDIO_REALTIME_PROVIDER || '',
+    ...(searchProvider === undefined ? { searchProviders: { 'gpt-live': new OpenAIWebSearchProvider(resolveOpenAIWebSearchConfiguration(env)) } } : {}),
     searchProvider: searchProvider === undefined
       ? createWebSearchProvider({
           webSearchProvider: config.provider,

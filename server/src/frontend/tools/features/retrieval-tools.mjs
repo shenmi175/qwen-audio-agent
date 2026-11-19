@@ -106,12 +106,18 @@ async function webSearch(runtime, { callId, turnId, args }) {
   try {
     const result = await runtime.frontendRetrieval.search(query, {
       limit: args.limit,
+      signal: runtime.externalToolContext?.signal,
     })
     await runtime.sendOutput(callId, result, turnId)
   } catch (error) {
     await runtime.sendOutput(callId, toolFailure(
       error.code || 'web_search_failed',
-      '网页搜索暂时不可用，请稍后再试。',
+      ({ search_auth_failed: '搜索服务认证或权限失败。',
+        search_rate_limited: '搜索服务额度或速率受限。',
+        search_aborted: '搜索等待超时或已取消。',
+        search_not_completed: '搜索没有完成。',
+        search_citations_missing: '搜索未返回可核验的来源。',
+      })[error.code] || '网页搜索请求失败。',
       { retryable: true },
     ), turnId)
   }

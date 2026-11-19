@@ -247,6 +247,7 @@ export const config = {
     : numberSetting(process.env.PORT, 3101, { min: 1, max: 65535 }),
   audioProvider: realtimeFrontend.active.provider,
   realtimeModelCatalogs: realtimeFrontend.modelCatalogs,
+  realtimeProviderProfiles: realtimeFrontend.profiles,
   realtimeConfigSignature: realtimeFrontend.active.signature,
   realtimeCredential: realtimeFrontend.credential,
   realtimeEndpoint: realtimeFrontend.active.endpoint,

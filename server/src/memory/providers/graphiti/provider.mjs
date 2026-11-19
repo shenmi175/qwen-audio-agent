@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { MarkdownContextStore } from '../markdown/context-store.mjs'
-import { graphitiComponentRequest } from '../../../../../components/graphiti/lifecycle.mjs'
+import { graphitiComponentRequest, graphitiComponentStatus } from '../../../../../components/graphiti/lifecycle.mjs'
 
 const error = code => Object.assign(new Error(code), { code })
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 export class GraphitiMemoryProvider {
-  constructor({ config = {}, logger, request = graphitiComponentRequest, userStore } = {}) {
+  constructor({ config = {}, logger, request = graphitiComponentRequest, componentStatus = graphitiComponentStatus, userStore } = {}) {
     this.config = config
     this.logger = logger
     this.request = request
+    this.componentStatus = componentStatus
     this.owner = config.personalOwnerId || 'user_personal'
     this.userStore = userStore || new MarkdownContextStore({ filePath: config.userModelPath,
       scope: 'user', personalOwnerId: this.owner, maxChars: 6000, template: '# USER' })
@@ -40,6 +41,19 @@ export class GraphitiMemoryProvider {
   async call(path, body) {
     try { return await this.request(path, body) }
     catch (e) { this.state.error_code = e.code || 'GRAPHITI_UNAVAILABLE'; throw error(this.state.error_code) }
+  }
+  async modelFamilyFields(family) {
+    if (family == null) return {}
+    if (family !== 'qwen' && family !== 'openai') throw error('MEMORY_INVALID_MODEL_FAMILY')
+    if (!this.familyCapabilities || this.familyCapabilities.expiresAt <= Date.now()) {
+      this.familyCapabilities = { expiresAt: Date.now() + 10000, status: this.componentStatus() }
+    }
+    const status = await this.familyCapabilities.status
+    if (status.status !== 'ready') throw error(status.code || 'GRAPHITI_UNAVAILABLE')
+    if (Array.isArray(status.model_families) && status.model_families.includes(family)) return { model_family: family }
+    // The pre-routing Graphiti API rejects unknown fields and uses Qwen.
+    if (!Object.hasOwn(status, 'model_families') && family === 'qwen') return {}
+    throw error('GRAPHITI_MODEL_FAMILY_UNSUPPORTED')
   }
   async query(ownerId, query, _options = {}, _context = {}) {
     this.owner = ownerId
@@ -82,10 +96,11 @@ export class GraphitiMemoryProvider {
   }
   async observe(ownerId, exchange = {}, context = {}) {
     if (exchange.messages?.length) {
+      const family = await this.modelFamilyFields(context.modelFamily)
       const job = await this.call('/memory/observe', { owner_id: ownerId,
         text: JSON.stringify(exchange.messages.map(m => ({ role: m.role, content: m.content, id: m.id, created_at: m.position }))),
         session_id: context.sessionId || 'gateway', event_id: context.batchId || context.turnId,
-        connection_id: context.connectionId || context.batchId, end_reason: context.endReason || context.source })
+        connection_id: context.connectionId || context.batchId, end_reason: context.endReason || context.source, ...family })
       this.track(ownerId, job, context)
       return { observed: true, ...job }
     }
@@ -96,8 +111,9 @@ export class GraphitiMemoryProvider {
       if (!String(message.content || '').trim()) continue
       const eventId = message.id || message.turnId || context.turnId || context.traceId
       if (!eventId) throw error('MEMORY_SOURCE_REQUIRED')
+      const family = await this.modelFamilyFields(context.modelFamily)
       job = await this.call('/memory/observe', { owner_id: ownerId, text: String(message.content).slice(0,12000),
-        session_id: context.sessionId || 'gateway', event_id: String(eventId) })
+        session_id: context.sessionId || 'gateway', event_id: String(eventId), ...family })
       this.track(ownerId, job, context)
     }
     return { observed: Boolean(job), ...job }
@@ -106,11 +122,12 @@ export class GraphitiMemoryProvider {
     let changed = 0, task = null
     const sessionId = context.sessionId || 'control'
     const source = context.traceId || context.turnId || randomUUID()
+    const family = await this.modelFamilyFields(context.modelFamily)
     for (const [index, change] of changes.entries()) {
       const edits = change.edits || []
       if (change.document === 'user') {
         const proposed = [change.append, ...edits.map(e => e.new_text)].filter(Boolean).join('\n')
-        const type = proposed ? await this.call('/memory/classify', { text: proposed }) : { kind: 'setting' }
+        const type = proposed ? await this.call('/memory/classify', { text: proposed, ...family }) : { kind: 'setting' }
         if (type.kind === 'clarify') throw error('ambiguous_edit')
         if (type.kind === 'setting') {
           const prepared = this.userStore.prepareEdit(ownerId, change)
@@ -135,7 +152,7 @@ export class GraphitiMemoryProvider {
       }
       for (const [opIndex, op] of operations.entries()) {
         const job = await this.call('/memory/apply', { owner_id: ownerId, ...op,
-          session_id: sessionId, event_id: `${source}:${index}:${opIndex}` })
+          session_id: sessionId, event_id: `${source}:${index}:${opIndex}`, ...family })
         this.track(ownerId, job, context)
         task = job
         if (task.status === 'failed') throw error(task.code || 'GRAPHITI_WRITE_FAILED')
@@ -152,7 +169,12 @@ export class GraphitiMemoryProvider {
   }
   async control(ownerId, operation, body = {}) {
     if (!['query','observe','task','retry','apply','wait','status','settings'].includes(operation)) throw error('MEMORY_INVALID_ACTION')
-    const value = await this.call(`/memory/${operation}`, { ...body, owner_id: ownerId })
+    let payload = { ...body, owner_id: ownerId }
+    if (['observe','apply'].includes(operation)) {
+      const { model_family, ...fields } = payload
+      payload = { ...fields, ...await this.modelFamilyFields(model_family) }
+    }
+    const value = await this.call(`/memory/${operation}`, payload)
     if (value.id && ['observe','apply','retry'].includes(operation)) this.track(ownerId, value, { source: 'gateway-memory-api', sessionId: body.session_id })
     return value
   }

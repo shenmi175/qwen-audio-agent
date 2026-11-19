@@ -40,6 +40,10 @@ test('local prompts refresh without network and preserve a valid pair on failed 
     assert.equal(m.frontendPromptStatus().lastError, null)
     assert.notDeepEqual(m.frontendPromptStatus().versions, status.versions)
     assert.equal(events, 2)
+    write('memory-voice', '按实际查询结果回忆')
+    await m.initializeFrontendPrompt()
+    assert.equal(m.loadMemoryVoicePrompt(), '按实际查询结果回忆')
+    assert.equal(events, 3)
   } finally {
     off()
     globalThis.fetch = original

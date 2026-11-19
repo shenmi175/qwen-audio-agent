@@ -1,3 +1,4 @@
+import { createGatewayHeartbeat } from '../../shared/gateway/heartbeat.mjs'
 import { initializeDiagnostics, flushDiagnostics } from '../../components/diagnostics/node.mjs'
 import { dirname, resolve } from 'node:path'
 import { once } from 'node:events'
@@ -148,7 +149,10 @@ try {
     state: 'ready',
     origin: `http://${host}:${port}`,
   })
-  gatewayHeartbeat = setInterval(() => gatewayLease?.update(), 15_000)
+  gatewayHeartbeat = setInterval(createGatewayHeartbeat(gatewayLease, {
+    onError: fields => logger.warn('gateway.heartbeat_write_failed', fields),
+    onRecovered: () => logger.info('gateway.heartbeat_recovered'),
+  }), 15_000)
   gatewayHeartbeat.unref?.()
 } catch (error) {
   clearInterval(gatewayHeartbeat)

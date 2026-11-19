@@ -2,22 +2,27 @@ import { useEffect, useRef, useState } from 'react'
 import { BUILTIN_ORB_SKINS, isBuiltinOrbSkin } from '../../../shared/orb-skin-catalog.mjs'
 import { t } from '../i18n.js'
 import { memoryCapability } from './memory-capability.mjs'
+import { preferredRealtimeModel } from './preferences.js'
 
 const categories = [['models', '模型与对话'], ['memory', '记忆与诊断'], ['appearance', '界面外观'], ['connection', '连接与隐私']]
+const providerLabels = new Map([['dashscope', 'Qwen · DashScope'], ['gpt-live', 'GPT · OpenAI']])
+
+function providerLabel(profile) {
+  return providerLabels.get(profile?.key) || profile?.label || ''
+}
 
 export default function WebPreferences({ sessionId, preferences, onChange, onClose, modelLabel,
-  modelInputModes = [], modelSettings = {}, onSelectModel, backendEnabled, knowledgeConfigured, onOpenLibrary, onNewSession,
+  modelInputModes = [], modelSettings = {}, onSelectModel, modelConnected, backendEnabled, knowledgeConfigured, onOpenLibrary, onNewSession,
   connected, microphoneEnabled, microphoneLabel, onToggleConnection, onToggleMicrophone,
   onShare, videoSupported, videoOpen, onToggleVideo, statusText, memoryStatus, memoryLearning, realtimeIdleTimeoutMs }) {
   const dialog = useRef(null)
   const [category, setCategory] = useState('models')
-  const [draft, setDraft] = useState(preferences.realtimeModel || '')
+  const [draftProvider, setDraftProvider] = useState(null)
+  const [draftModel, setDraftModel] = useState(null)
   const [notice, setNotice] = useState('')
   const [graphiti, setGraphiti] = useState(null)
   const [liveMemory, setLiveMemory] = useState(null)
   const [memorySettings, setMemorySettings] = useState(null)
-  const [promptSaving, setPromptSaving] = useState(false)
-  const [promptNotice, setPromptNotice] = useState('')
   const [memoryTierNotice, setMemoryTierNotice] = useState('')
   const [diagnostics, setDiagnostics] = useState(null)
   const [systemReducesMotion, setSystemReducesMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
@@ -51,11 +56,29 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
   }, [])
   const learning = liveMemory || memoryLearning || {}
   const capability = memoryCapability({ learning, memory: memoryStatus, graphiti })
-  const catalog = modelSettings.catalog || []
-  const selectedId = draft || modelSettings.defaultModel || ''
+  const providers = modelSettings.providers || []
+  const defaultProfile = providers.find(provider => provider.key === modelSettings.defaultProvider)
+  const savedKey = preferences.realtimeProvider || ''
+  const savedProfile = savedKey ? providers.find(provider => provider.key === savedKey) : defaultProfile
+  const preferredKey = draftProvider ?? savedKey
+  const profile = preferredKey ? providers.find(provider => provider.key === preferredKey) : defaultProfile
+  const draft = draftModel ?? preferredRealtimeModel(preferences, profile)
+  const catalog = profile?.catalog || []
+  const selectedId = draft || profile?.model || ''
   const selected = catalog.find(model => model.id === selectedId)
-  const changed = draft !== (preferences.realtimeModel || '')
-  const valid = !draft || Boolean(selected)
+  const savedModel = preferredRealtimeModel(preferences, savedProfile)
+  const changed = preferredKey !== savedKey || draft !== savedModel
+  const valid = Boolean(profile) && (!draft || Boolean(selected))
+  const activeProvider = modelSettings.activeProvider || modelSettings.defaultProvider
+  const showActiveModel = modelConnected && Boolean(modelSettings.activeModel)
+  const selectionActive = showActiveModel && activeProvider === savedProfile?.key
+    && modelSettings.activeModel === (savedModel || savedProfile?.model)
+  const memoryFamily = (showActiveModel ? activeProvider : savedProfile?.key) === 'gpt-live' ? 'openai' : 'qwen'
+  const familyModels = memorySettings?.models_by_family || graphiti?.models_by_family || learning.runtime?.models_by_family
+  const memoryModels = familyModels?.[memoryFamily] || (memoryFamily === 'qwen' ? {
+    selection: memorySettings?.model || graphiti?.agentModel || learning.runtime?.agent_model,
+    graph: graphiti?.graphModel || learning.runtime?.graph_model,
+  } : null)
   const idleSeconds = Number.isFinite(realtimeIdleTimeoutMs) ? Math.max(0, Math.round(realtimeIdleTimeoutMs / 1000)) : null
   const duration = idleSeconds && idleSeconds % 60 === 0
     ? t('{minutes} 分钟', { minutes: idleSeconds / 60 }) : t('{seconds} 秒', { seconds: idleSeconds })
@@ -70,17 +93,31 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
       <nav className="web-preferences-nav" aria-label={t('设置分类')}>
         {categories.map(([id, label]) => <button type="button" key={id} aria-pressed={category === id}
           onClick={() => setCategory(id)}>{t(label)}</button>)}
+        <a href="/prompts" target="_blank" rel="noopener noreferrer" className="web-prompt-link">提示词 ↗</a>
       </nav>
       <div className="web-preferences-content">
         {category === 'models' && <>
           <section className="web-settings-card">
             <div className="web-settings-card-heading"><h3>{t('实时对话模型')}</h3><span className="web-settings-badge">{t('当前设备')}</span></div>
-            <p className="web-settings-model">{connected && modelSettings.activeModel ? modelLabel : t('尚未连接')}<small className="web-settings-status">{statusText}</small></p>
-            {connected && modelSettings.activeModel && <p className="web-model-id">{t('当前生效')} · {modelSettings.activeModel}</p>}
+            <p className="web-settings-model">{showActiveModel ? modelLabel : t('尚未连接')}<small className="web-settings-status">{statusText}</small></p>
+            {showActiveModel && <p className="web-model-id">{t('当前生效')} · {modelSettings.activeModel}</p>}
+            {(providers.length > 1 || (providers.length === 1 && !defaultProfile) || (preferredKey && !profile)) &&
+              <div className="web-settings-field web-model-field">
+                <label htmlFor="web-realtime-provider">{t('选择供应商')}</label>
+                <select id="web-realtime-provider" value={preferredKey} onChange={event => {
+                  setDraftProvider(event.target.value)
+                  setDraftModel(null)
+                  setNotice('')
+                }}>
+                  <option value="">{t('跟随服务默认')}{defaultProfile ? ' · ' + providerLabel(defaultProfile) : ''}</option>
+                  {providers.map(provider => <option key={provider.key} value={provider.key}>{providerLabel(provider)}</option>)}
+                  {preferredKey && !profile && <option value={preferredKey} disabled>{preferredKey} · {t('未配置')}</option>}
+                </select>
+              </div>}
             <div className="web-settings-field web-model-field"><label htmlFor="web-realtime-model">{t('选择模型')}</label>
-              <select id="web-realtime-model" value={draft} onChange={event => { setDraft(event.target.value); setNotice('') }}>
-                <option value="">{t('跟随服务默认')}{modelSettings.defaultModel ? ' · ' + modelSettings.defaultModel : ''}</option>
-                {catalog.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+              <select id="web-realtime-model" value={draft} disabled={!profile} onChange={event => { setDraftModel(event.target.value); setNotice('') }}>
+                <option value="">{t('跟随服务默认')}{profile?.model ? ' · ' + profile.model : ''}</option>
+                {catalog.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}
                 {draft && !selected && <option value={draft} disabled>{draft} · {t('已不在模型列表中')}</option>}
               </select>
             </div>
@@ -95,15 +132,27 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
             {selected?.sessionConstraints?.workspaceEndpoint && <p className="web-settings-hint">{t('此模型需要专属业务空间服务地址，未配置时连接会失败。')}</p>}
             <button type="button" className="web-settings-primary" disabled={!changed || !valid}
               onClick={() => {
-                onSelectModel(draft)
+                onSelectModel({ provider: preferredKey, model: draft })
+                setDraftProvider(null)
+                setDraftModel(null)
                 setNotice(connected ? '已保存，正在重新建立当前设备的模型连接。' : '已保存，下次开始对话时生效。')
               }}>{t('应用模型')}</button>
-            {notice && <p className="web-settings-notice" role="status">{t(connected && modelSettings.activeModel === (preferences.realtimeModel || modelSettings.defaultModel) ? '模型已生效。' : notice)}</p>}
-            <p className="web-settings-hint">{t('切换会中断当前回复并重新连接；聊天记录和共享记忆保留。其他设备的模型不变。')}</p>
+            {notice && <p className="web-settings-notice" role="status">{t(selectionActive ? '模型已生效。' : notice)}</p>}
+            <p className="web-settings-hint">{t('切换供应商会新建对话。同一供应商内切换模型会继续当前对话。')}</p>
             <p className="web-settings-hint">{t('模型列表来自服务配置，可用性取决于账户授权；连接失败会显示原因。')}</p>
           </section>
           <section className="web-settings-card">
             <h3>{t('对话控制')}</h3>
+            <div className="web-settings-field">
+              <label htmlFor="web-conversation-language">{t('对话语言')}</label>
+              <select id="web-conversation-language" value={preferences.conversationLanguage || 'zh'}
+                onChange={event => onChange({ ...preferences, conversationLanguage: event.target.value })}>
+                <option value="zh">中文（可夹杂英文）</option>
+                <option value="en">English</option>
+                <option value="auto">{t('跟随用户语言')}</option>
+              </select>
+            </div>
+            <p className="web-settings-hint">{t('下次连接生效')}</p>
             <div className="web-settings-actions">
               <button type="button" className={connected ? '' : 'primary'} onClick={onToggleConnection}>{connected ? t('断开连接') : t('开始对话')}</button>
               <button type="button" disabled={!connected} aria-pressed={microphoneEnabled} onClick={onToggleMicrophone}>{microphoneLabel}</button>
@@ -118,28 +167,12 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
         {category === 'memory' && <>
           <section className="web-settings-card">
             <h3>{t('长期记忆')}</h3>
-            <p className="web-settings-hint">对话提示词 · 本地文件 · 每 10 秒检查更新，当前回复结束后自动应用。</p>
-            <p className="web-settings-hint">人格和行为文件位于 runtime/prompts/frontend；记忆提取规则位于 Graphiti 服务所在主机的 runtime/prompts/memory，新任务读取最新内容。</p>
-            <button type="button" disabled={promptSaving} onClick={async () => {
-              setPromptSaving(true); setPromptNotice('正在刷新…')
-              try {
-                const response = await fetch('/api/prompts/refresh', { method: 'POST' })
-                const value = await response.json()
-                if (!response.ok) throw new Error(value.code)
-                setLiveMemory(previous => ({ ...previous, frontendPrompts: value }))
-                setPromptNotice('已读取本地文件，当前回复结束后自动应用。')
-              } catch { setPromptNotice('刷新失败，继续使用上次有效内容。') }
-              finally { setPromptSaving(false) }
-            }}>立即刷新提示词</button>
-            {promptNotice && <p role="status">{promptNotice}</p>}
-            <p className="web-settings-hint">行为版本 {learning.frontendPrompts?.versions?.['assistant-behavior'] ?? '—'} · 人格版本 {learning.frontendPrompts?.versions?.['assistant-persona'] ?? '—'}</p>
-            {learning.frontendPrompts?.lastError && <p role="status">提示词刷新失败：{learning.frontendPrompts.lastError}</p>}
             <dl className="web-capabilities">
               <div><dt>{t('记忆范围')}</dt><dd>{memoryStatus?.scope === 'shared' ? t('所有设备共享') : t('按用户独立')}</dd></div>
               <div><dt>Graphiti</dt><dd>{t(capability.graphitiLabel)} · {graphiti?.deployment === 'remote' ? '云端' : '本机'}</dd></div>
               <div><dt>{t('自动提取')}</dt><dd>{capability.automatic ? t('已开启') : t('未启用')}</dd></div>
-              <div><dt>{t('记忆 Agent 模型')}</dt><dd>{graphiti?.agentModel || learning.runtime?.agent_model || '—'}</dd></div>
-              <div><dt>{t('图谱提取模型')}</dt><dd>{graphiti?.graphModel || '—'}</dd></div>
+              {memoryModels?.selection && <div><dt>{t('记忆 Agent 模型')}</dt><dd>{memoryModels.selection}</dd></div>}
+              <div><dt>{t('图谱提取模型')}</dt><dd>{memoryModels?.graph || '—'}</dd></div>
               <div><dt>{t('待处理任务')}</dt><dd>{learning.runtime?.pending_tasks ?? '—'}</dd></div>
             </dl>
             {capability.mode === 'connection-close' && <p className="web-settings-hint">{t('连接关闭后在后台提取长期记忆。')}</p>}
@@ -155,13 +188,12 @@ export default function WebPreferences({ sessionId, preferences, onChange, onClo
                   setMemorySettings(value); setMemoryTierNotice(t('已保存，后续后台记忆任务使用新档位。'))
                 } catch (error) { setMemoryTierNotice(error.message || 'MEMORY_SETTINGS_FAILED') }
               }}>
-                <option value="light">{t('轻度')} · qwen-flash</option>
-                <option value="medium">{t('中等')} · qwen-plus</option>
-                <option value="advanced">{t('高级')} · qwen-max</option>
+                <option value="light">{t('轻度')}</option>
+                <option value="medium">{t('中等')}</option>
+                <option value="advanced">{t('高级')}</option>
               </select>
               {memoryTierNotice && <p className="web-settings-notice" role="status">{memoryTierNotice}</p>}
             </div>
-            <p className="web-settings-hint">{t('此处展示后台记忆模型；上面的模型选择只改变实时对话。')}</p>
           </section>
           <section className="web-settings-card">
             {diagnostics?.enabled ? <>

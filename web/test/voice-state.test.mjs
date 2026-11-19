@@ -6,10 +6,28 @@ import {
   microphoneControlEvent,
   releasesManualInputGuard,
   realtimeClientMode,
+  realtimeInputFormatForEvent,
   shouldAdvertiseVoice,
   shouldClaimReleasedVoice,
   visualVoiceState,
 } from '../src/realtime/useRealtimeVoice.js'
+
+test('microphone format follows the current upstream readiness', () => {
+  const client = {}
+  const ready = sampleRate => ({ type: 'voice.ready', inputSampleRate: sampleRate })
+  const connected = { type: 'voice.connection', state: 'connected' }
+  assert.equal(realtimeInputFormatForEvent(null, connected, client), null)
+  const qwen = realtimeInputFormatForEvent(null, ready(16_000), client)
+  assert.deepEqual(qwen, { client, sampleRate: 16_000 })
+  assert.equal(realtimeInputFormatForEvent(qwen, connected, client), qwen)
+  const reconnecting = { type: 'voice.connection', state: 'connecting' }
+  assert.equal(realtimeInputFormatForEvent(qwen, reconnecting, client), null)
+
+  const gpt = realtimeInputFormatForEvent(null, ready(24_000), client)
+  assert.deepEqual(gpt, { client, sampleRate: 24_000 })
+  assert.notEqual(realtimeInputFormatForEvent(gpt, ready(24_000), client), gpt)
+  assert.equal(realtimeInputFormatForEvent(gpt, { type: 'voice.deactivated' }, client), null)
+})
 
 test('desktop microphone controls mute only input', () => {
   assert.deepEqual(microphoneControlEvent({

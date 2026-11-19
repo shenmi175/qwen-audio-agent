@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { WebSocketServer } from 'ws'
 import { config } from '../src/core/config.mjs'
+import { initializeFrontendPrompt } from '../src/conversation/frontend-agent-context.mjs'
 import { RealtimeFrontend } from '../src/voice/realtime-provider.mjs'
 import { gptLiveProvider } from '../src/voice/providers/gpt-live.mjs'
 import { googleLiveProvider } from '../src/voice/providers/google-live.mjs'
@@ -16,7 +20,21 @@ function withConfig(t, patch) {
   t.after(() => Object.assign(config, previous))
 }
 
-test('configures GPT-Live against the OpenAI Realtime WebSocket contract', t => {
+test('configures GPT-Live against the OpenAI Realtime WebSocket contract', async t => {
+  const prompts = mkdtempSync(join(tmpdir(), 'live-provider-prompts-'))
+  const previous = process.env.QWAUDIO_PROMPTS_DIR
+  t.after(() => {
+    if (previous === undefined) delete process.env.QWAUDIO_PROMPTS_DIR
+    else process.env.QWAUDIO_PROMPTS_DIR = previous
+    rmSync(prompts, { recursive: true, force: true })
+  })
+  process.env.QWAUDIO_PROMPTS_DIR = prompts
+  mkdirSync(join(prompts, 'frontend'))
+  for (const name of ['assistant-behavior', 'assistant-persona']) {
+    writeFileSync(join(prompts, 'frontend', name + '.md'), 'Synthetic test conversation policy.')
+  }
+  await initializeFrontendPrompt()
+
   withConfig(t, {
     audioProvider: 'gpt-live',
     realtimeCredential: 'openai-test',
@@ -40,6 +58,12 @@ test('configures GPT-Live against the OpenAI Realtime WebSocket contract', t => 
   })
   assert.equal(session.type, 'realtime')
   assert.equal(session.audio.input.format.rate, 24000)
+  assert.equal(session.audio.input.transcription.model, 'gpt-transcribe')
+  assert.deepEqual(session.audio.input.transcription.languages, ['zh', 'en'])
+  assert.match(session.instructions, /默认用中文/)
+  const english = gptLiveProvider.buildSession({ agentContext: { client: { conversationLanguage: 'en' } } })
+  assert.deepEqual(english.audio.input.transcription.languages, ['en', 'zh'])
+  assert.match(english.instructions, /Use English by default/)
   assert.equal(session.audio.output.voice, 'marin')
   assert.equal(
     describeActiveRealtime('gpt-live').modelCapabilities.functionCalling,

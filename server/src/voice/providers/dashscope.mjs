@@ -120,8 +120,9 @@ export function createDashscopeProvider(connection = providerRuntimeConfiguratio
     modelCatalog: () => listDashScopeRealtimeModelProfiles(config.realtimeModelCatalogs),
     modelProfile: activeModelProfile,
     voice: () => String(connection.voice || '').trim() || activeModelProfile().sessionDefaults.voice,
+    configurationSignature: () => connection.signature,
     isConfigured: () => connection.configured,
-    missingConfigurationMessage: '请先选择 dashscope 并配置 QWEN_AUDIO_REALTIME_API_KEY',
+    missingConfigurationMessage: '请配置 DashScope 实时语音的 API Key',
     connectTimeoutMessage: '连接 Qwen Audio Realtime 超时',
 
     url: () => realtimeUrl(connection.endpoint, connection.model),

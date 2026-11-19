@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { ClientEventState } from './client-event-state.js'
+import { connectionErrorMessage } from './connection-error.js'
 import {
   GatewayClientEvent,
   GatewayServerEvent,
@@ -41,7 +42,6 @@ import {
   gatewayTransportIsRemote,
 } from '../gateway-transport.js'
 
-const DEFAULT_INPUT_RATE = 16000
 const OUTPUT_RATE = 24000
 // Desktop CSP permits same-origin scripts, not inlined data: worklet URLs.
 const microphoneAudioWorkletProcessorUrl = new URL(
@@ -51,6 +51,19 @@ const microphoneAudioWorkletProcessorUrl = new URL(
 
 export function acceptsVoiceState(event, currentTurnId) {
   return acceptsGatewayVoiceState(event, currentTurnId)
+}
+
+export function realtimeInputFormatForEvent(format, event, client) {
+  if (event.type === GatewayServerEvent.VOICE_READY) {
+    return Number.isInteger(event.inputSampleRate) && event.inputSampleRate > 0
+      ? { client, sampleRate: event.inputSampleRate }
+      : null
+  }
+  if (
+    event.type === GatewayServerEvent.VOICE_DEACTIVATED
+    || (event.type === GatewayServerEvent.VOICE_CONNECTION && event.state !== 'connected')
+  ) return null
+  return format
 }
 
 export function visualVoiceState(state) {
@@ -206,7 +219,9 @@ export function releasesManualInputGuard(event, turnId = '') {
 export default function useRealtimeVoice({
   sessionId,
   connectionEnabled = true,
+  provider = '',
   model = '',
+  conversationLanguage = 'zh',
   enabled,
   suspended = false,
   outputMuted = false,
@@ -224,6 +239,9 @@ export default function useRealtimeVoice({
   additionalCapabilities = [],
   onWakeWordAudio,
 }) {
+  // A preference edit takes effect on the next connection, without interrupting speech.
+  const conversationLanguageRef = useRef(conversationLanguage)
+  conversationLanguageRef.current = conversationLanguage
   const [clientState, dispatchClientState] = useReducer(
     reduceGatewayClientState,
     undefined,
@@ -258,7 +276,7 @@ export default function useRealtimeVoice({
   const clientInstanceId = useRef(
     String(configuredClientInstanceId || '').trim() || crypto.randomUUID(),
   )
-  const inputSampleRate = useRef(DEFAULT_INPUT_RATE)
+  const inputFormatRef = useRef(null)
   const clientStatesSignature = [...new Set(
     (Array.isArray(clientStates) ? clientStates : [])
       .filter(state => typeof state === 'string' && state),
@@ -666,13 +684,14 @@ export default function useRealtimeVoice({
     }
     const mutedResponses = mutedPlaybackResponses.current
     const handleEvent = event => {
+      const inputFormat = realtimeInputFormatForEvent(inputFormatRef.current, event, client)
+      inputFormatRef.current = inputFormat
       dispatchClientState(event)
       if (event.type === GatewayServerEvent.VOICE_READY) environmentState.setReady(true)
       if (event.type === GatewayServerEvent.VOICE_CONNECTION && event.state !== 'connected') {
         environmentState.setReady(false)
       }
-      if (event.type === GatewayServerEvent.VOICE_READY && event.inputSampleRate) {
-        inputSampleRate.current = event.inputSampleRate
+      if (event.type === GatewayServerEvent.VOICE_READY && inputFormat) {
         hasConnectedRef.current = true
         setError('')
         setVisualError(false)
@@ -685,7 +704,7 @@ export default function useRealtimeVoice({
           setVisualError(false)
           flushPendingManualInputs()
         } else if (event.state === 'unavailable') {
-          setError(event.message || t('语音前台连接异常，正在重试'))
+          setError(previous => t(connectionErrorMessage(event.message, previous, '语音前台连接异常，正在重试')))
           setVisualError(true)
         }
       }
@@ -725,7 +744,7 @@ export default function useRealtimeVoice({
           markAudioDone(event.responseId)
         }
       }
-      if (event.type === GatewayServerEvent.ERROR) setError(event.message)
+      if (event.type === GatewayServerEvent.ERROR) setError(t(connectionErrorMessage(event.message)))
       eventRef.current?.(event)
     }
     const client = new GatewayClient({
@@ -750,6 +769,7 @@ export default function useRealtimeVoice({
         })
         return {
           type: GatewayClientEvent.CONNECT,
+          conversationLanguage: conversationLanguageRef.current,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           locale: navigator.language,
           voiceEnabled: mode.outputEnabled,
@@ -757,6 +777,7 @@ export default function useRealtimeVoice({
           outputEnabled: mode.outputEnabled,
           textOnly: mode.textOnly,
           wakeWordOnly: wakeWordOnlyRef.current,
+          ...(provider ? { provider } : {}),
           ...(model ? { model } : {}),
           clientType,
           clientLabel,
@@ -774,6 +795,9 @@ export default function useRealtimeVoice({
         ...recovery,
       }),
       onStatus: status => {
+        if (['connecting', 'unavailable', 'disconnected', 'occupied', 'replaced', 'revoked'].includes(status.state)) {
+          inputFormatRef.current = null
+        }
         if (!['ready', 'connected'].includes(status.state)) environmentState.setReady(false)
         if (status.state === 'connected') {
           setError('')
@@ -845,6 +869,7 @@ export default function useRealtimeVoice({
 
     return () => {
       environmentState.setReady(false)
+      inputFormatRef.current = null
       stopPlayback('connection_closed')
       client.stop()
       socketRef.current = null
@@ -859,6 +884,7 @@ export default function useRealtimeVoice({
     clientLabel,
     connectionEnabled,
     connectionAttempt,
+    provider,
     model,
     clientStatesSignature,
     clientType,
@@ -953,8 +979,15 @@ export default function useRealtimeVoice({
         })
         const wakeWordResampler = createStreamingResampler()
         const inputResampler = createStreamingResampler()
-        let inputResamplerSocket = null
+        let inputResamplerFormat = null
         let inputAudioSender = null
+        const resetInputStream = () => {
+          if (!inputAudioSender) return
+          inputResampler.reset()
+          inputResamplerFormat = null
+          inputAudioSender.reset()
+          inputAudioSender = null
+        }
         let source
         let processor
         let closeProcessor = () => {}
@@ -971,26 +1004,21 @@ export default function useRealtimeVoice({
                 manualInputPendingRef.current,
               )
               if (wakeWordOnlyRef.current) {
-                inputResampler.reset()
-                inputResamplerSocket = null
-                inputAudioSender?.reset()
-                inputAudioSender = null
+                resetInputStream()
                 const wakeAudio = wakeWordResampler.process(samples, context.sampleRate, 16_000)
                 if (wakeAudio.length) wakeWordAudioRef.current?.(pcmBase64(wakeAudio), 16_000)
                 return
               }
               wakeWordResampler.reset()
               const socket = socketRef.current
-              if (socket?.readyState !== WebSocket.OPEN) {
-                inputResampler.reset()
-                inputResamplerSocket = null
-                inputAudioSender?.reset()
-                inputAudioSender = null
+              const format = inputFormatRef.current
+              if (!format || format.client !== socket || socket.readyState !== WebSocket.OPEN) {
+                resetInputStream()
                 return
               }
-              if (socket !== inputResamplerSocket) {
-                inputResampler.reset()
-                inputResamplerSocket = socket
+              if (format !== inputResamplerFormat) {
+                resetInputStream()
+                inputResamplerFormat = format
                 inputAudioSender = createRealtimeAudioSendController({
                   send: event => socket.send(event),
                   getBufferedAmount: () => socket.bufferedAmount,
@@ -999,7 +1027,7 @@ export default function useRealtimeVoice({
               const audio = inputResampler.process(
                 samples,
                 context.sampleRate,
-                inputSampleRate.current,
+                format.sampleRate,
               )
               if (audio.length) {
                 inputAudioSender.send({
@@ -1020,10 +1048,7 @@ export default function useRealtimeVoice({
               captureClosed = true
               media.getTracks().forEach(track => track.stop())
               wakeWordResampler.reset()
-              inputResampler.reset()
-              inputResamplerSocket = null
-              inputAudioSender?.reset()
-              inputAudioSender = null
+              resetInputStream()
               closeProcessor()
               source?.disconnect()
             },

@@ -40,6 +40,26 @@ test('normalizes hard line breaks in final ASR text', () => {
   assert.equal(normalizeTranscript('查看下载目录\n下面有哪些文件  '), '查看下载目录 下面有哪些文件')
 })
 
+test('reconnecting reconciles durable and live IDs without moving newer turns to the top', () => {
+  const history = [
+    { id: 'voice:user:voice-100-1', role: 'user', turnId: 'voice-100-1', content: '原话题' },
+    { id: 'voice:user:text_next', role: 'user', turnId: 'text_next', content: '继续刚才' },
+    { id: 'voice:assistant:resp_next', role: 'assistant', turnId: 'text_next', content: '接着聊' },
+  ]
+  const live = [
+    { id: 'voice:user:voice-100-1', role: 'user', turnId: 'voice-100-1', content: '原话题' },
+    { id: 'user:text_next', role: 'user', turnId: 'text_next', content: '继续刚才' },
+    { id: 'voice:resp_next', role: 'assistant', turnId: 'text_next', content: '接着聊', interrupted: true },
+  ]
+  const once = mergeConversationHistory(live, history)
+  assert.deepEqual(once.map(m => m.id), ['user:voice-100-1', 'user:text_next', 'voice:resp_next'])
+  assert.equal(once[2].interrupted, true)
+  assert.deepEqual(mergeConversationHistory(once, history), once)
+  const next = upsertAssistantTranscript(once, { id: 'voice:resp_next', turnId: 'text_next', content: '接着聊。', final: true })
+  assert.equal(next.length, 3)
+  assert.equal(next[2].content, '接着聊。')
+})
+
 test('attaches citations to a final assistant transcript and preserves them', () => {
   let messages = upsertAssistantTranscript([], {
     id: 'voice:response-1',

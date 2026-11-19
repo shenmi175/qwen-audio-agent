@@ -36,7 +36,22 @@ QWEN_AUDIO_REALTIME_URL=
 QWEN_AUDIO_REALTIME_VOICE=
 ```
 
-All frontends use the same five fields. They describe one active connection, not a collection of saved provider profiles. When switching providers, replace the key and model, and clear or replace the URL and voice. Frontend credentials are separate from backend, search, and memory-service credentials.
+In single-provider mode the five fields describe the active connection. When switching providers, replace the key and model, and clear or replace the URL and voice. Frontend credentials are separate from backend, search, and memory-service credentials.
+
+### Switch between Qwen and OpenAI in the web app
+
+Put both profiles in the same server-side `config.env`. Set the default provider and supply separate keys.
+
+```dotenv
+QWEN_AUDIO_REALTIME_PROVIDER=gpt-live
+QWEN_AUDIO_REALTIME_PROFILES=dashscope,gpt-live
+QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_API_KEY=
+QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_MODEL=qwen-audio-3.1-realtime-plus
+QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_API_KEY=
+QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_MODEL=gpt-realtime-2.1
+```
+
+Each profile accepts `URL` and `VOICE` with the same prefix. Leave them empty to use the provider defaults. Web settings can select a configured provider and model for the next voice connection. A Graphiti worker that supports both families uses the session's family for background selection and graph extraction. Both families use the same graph and MCP tools.
 
 ## Connection Fields
 
@@ -118,4 +133,4 @@ Configure frontend tools separately: [Search](../guides/web-search.md), [MCP](..
 
 Provider-specific frontend variables are read only for compatibility. The five unified fields take precedence, including explicitly empty values. If an older file contains both unified model/voice fields and another provider's model/voice fields, put the selected provider's intended values in the unified fields. For Omni, move an existing `QWEN_OMNI_REALTIME_VOICE` value to `QWEN_AUDIO_REALTIME_VOICE`.
 
-Only the active connection is saved; separate provider drafts are no longer persisted. Old variables are not automatically deleted because a backend Agent, search, or another module may still use them. Remove obsolete frontend-only overrides yourself after migration. See [configuration priority](../configuration.md#configuration-priority).
+Desktop settings save the active connection. Use the server-side profiles above for per-connection selection in the web app. Old variables are not automatically deleted because a backend Agent, search, or another module may still use them. See [configuration priority](../configuration.md#configuration-priority).

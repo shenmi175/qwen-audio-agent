@@ -7,8 +7,10 @@ import {
   withFileTransaction,
 } from '../../shared/file-transaction-lock.mjs'
 import {
+  configuredRealtimeProviderProfiles,
   normalizeRealtimeProvider,
   realtimeModelCatalog,
+  realtimeProviderProfilePrefix,
   resolveRealtimeModelProfile,
 } from '../../shared/realtime-provider-catalog.mjs'
 import { mergeRealtimeEnvironment, realtimeSettingsFromEnvironment } from '../../shared/realtime-provider-definitions.mjs'
@@ -22,8 +24,24 @@ function configText(path) {
   }
 }
 
+function profileModelEnvironment(values, provider) {
+  return configuredRealtimeProviderProfiles(values).has(provider)
+    ? `${realtimeProviderProfilePrefix(provider)}MODEL`
+    : ''
+}
+
+function modelFromConfig(values, provider) {
+  const environment = profileModelEnvironment(values, provider)
+  if (!environment) return realtimeSettingsFromEnvironment(values).realtimeModel
+  return realtimeSettingsFromEnvironment({
+    QWEN_AUDIO_REALTIME_PROVIDER: provider,
+    QWEN_AUDIO_REALTIME_MODEL: values[environment],
+  }).realtimeModel
+}
+
 export function resolveConfigModel(env = {}, content = '') {
-  return realtimeSettingsFromEnvironment(mergeRealtimeEnvironment(parseEnv(content), env)).realtimeModel
+  const values = mergeRealtimeEnvironment(parseEnv(content), env)
+  return modelFromConfig(values, normalizeRealtimeProvider(values.QWEN_AUDIO_REALTIME_PROVIDER))
 }
 
 export function assertKnownRealtimeModel(model, provider = 'dashscope') {
@@ -53,7 +71,7 @@ function updateRealtimeModelConfigUnlocked(configPath, model, {
   const values = mergeRealtimeEnvironment(parseEnv(existing), env)
   const provider = normalizeRealtimeProvider(values.QWEN_AUDIO_REALTIME_PROVIDER)
   const profile = assertKnownRealtimeModel(model, provider)
-  const environment = realtimeModelCatalog(provider).environment
+  const environment = profileModelEnvironment(values, provider) || realtimeModelCatalog(provider).environment
   const assignments = new Map([
     [environment, model],
   ])
@@ -106,7 +124,7 @@ export function showConfig({ configPath, env = {}, content = configText(configPa
   const values = mergeRealtimeEnvironment(parseEnv(content), env)
   const provider = normalizeRealtimeProvider(values.QWEN_AUDIO_REALTIME_PROVIDER)
   const catalog = realtimeModelCatalog(provider)
-  const model = resolveConfigModel(env, content)
+  const model = modelFromConfig(values, provider)
   return [
     `Realtime 前台：${provider}`,
     `Realtime 模型：${model || '由上游服务配置'}`,

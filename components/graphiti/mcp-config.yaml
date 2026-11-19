@@ -33,6 +33,8 @@ graphiti:
   user_id: user
 
   entity_types:
+    - name: AttributeValue
+      description: 用户原文明示的姓名、称呼等身份属性的文字值，用于保留说话者与身份属性的关系。
     - name: Person
       description: 真实人物或对话说话者，保留明确身份和主体归属。
     - name: Work

@@ -98,9 +98,11 @@ export class RealtimeProviderSession {
   switchProvider(providerName) {
     const requested = this.providerRegistry.resolve(providerName)
     if (requested.key === this.providerKey) return false
+    // The queued chunks were resampled for the previous provider.
+    const clearAudio = requested.inputSampleRate !== this.provider().inputSampleRate
     this.providerKey = requested.key
     this.blockedError = ''
-    this.detach({ clearAudio: false })
+    this.detach({ clearAudio })
     return true
   }
 

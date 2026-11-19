@@ -455,13 +455,14 @@ test('reference Client initializes and updates the output voice through GCP', as
     createSocket: () => socket,
     clientInstanceId: 'sdk-output-voice-test',
     capabilities: [GatewayClientCapability.SESSION_OUTPUT_VOICE],
-    configure: { outputVoice: 'longanlufeng' },
+    configure: { outputVoice: 'longanlufeng', conversationLanguage: 'zh' },
     reconnect: false,
   }).start()
 
   socket.open()
 
   assert.equal(socket.sent[0].connection.output_voice, 'longanlufeng')
+  assert.equal(socket.sent[0].connection.conversation_language, 'zh')
   socket.receive({
     type: GatewayClientProtocolEvent.SESSION_READY,
     event_id: 'evt_gateway_voice_ready',

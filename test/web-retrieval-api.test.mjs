@@ -6,12 +6,12 @@ import { resolveWebSearchConfiguration } from '../shared/web-search-configuratio
 test('public retrieval factory shares the default provider without starting Gateway state', () => {
   const runtime = createWebRetrieval({ env: {} })
   assert.deepEqual(runtime.capabilities(), ['web-search', 'url-fetch'])
-  assert.equal(runtime.describe().searchProvider.key, 'so360')
+  assert.equal(runtime.describe().searchProvider.key, 'bing')
   assert.deepEqual(createWebRetrieval({ env: { QWEN_AUDIO_WEB_SEARCH_PROVIDER: 'none' }, urlFetcher: null }).capabilities(), [])
 })
 
 test('pure search configuration preserves existing provider and credential selection', () => {
-  assert.equal(resolveWebSearchConfiguration({}).provider, 'so360')
+  assert.equal(resolveWebSearchConfiguration({}).provider, 'bing')
   const preset = resolveWebSearchConfiguration({ QWEN_AUDIO_WEB_SEARCH_PROVIDER: 'bailian', DASHSCOPE_API_KEY: 'test-only-key' })
   assert.equal(preset.mcpToken, 'test-only-key')
   assert.equal(preset.mcpTool, 'bailian_web_search')

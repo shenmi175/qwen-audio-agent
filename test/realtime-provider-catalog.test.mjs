@@ -390,3 +390,43 @@ test('fails closed for unknown model ids without name-based capability inference
     resolveDashScopeRealtimeModelProfile(AUDIO_PLUS_ID).transportCapabilities,
   )
 })
+
+test('separate realtime profiles use only their own key, endpoint, model and voice', () => {
+  const env = {
+    QWEN_AUDIO_REALTIME_PROVIDER: 'openai',
+    QWEN_AUDIO_REALTIME_PROFILES: 'qwen,gpt-live',
+    QWEN_AUDIO_REALTIME_API_KEY: 'legacy-voice-key',
+    OPENAI_API_KEY: 'unrelated-openai-key',
+    QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_API_KEY: 'qwen-voice-key',
+    QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_MODEL: 'qwen-audio-3.1-realtime-flash',
+    QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_URL: 'wss://qwen.example/realtime',
+    QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_VOICE: 'longanqian_v3.1',
+    QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_API_KEY: 'openai-voice-key',
+    QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_VOICE: 'marin',
+  }
+  const config = resolveRealtimeFrontendConfiguration(env)
+  const qwen = config.profiles.dashscope
+  const openai = config.profiles['gpt-live']
+  assert.equal(qwen.credential, 'qwen-voice-key')
+  assert.equal(qwen.model, 'qwen-audio-3.1-realtime-flash')
+  assert.equal(qwen.endpoint, 'wss://qwen.example/realtime')
+  assert.equal(qwen.voice, 'longanqian_v3.1')
+  assert.equal(openai.credential, 'openai-voice-key')
+  assert.equal(openai.model, 'gpt-realtime-2.1')
+  assert.equal(openai.endpoint, 'wss://api.openai.com/v1/realtime')
+  assert.equal(openai.voice, 'marin')
+  assert.equal(config.active.provider, 'gpt-live')
+  assert.equal(config.credential, 'openai-voice-key')
+  assert.equal(config.active.credential, undefined)
+
+  const blank = resolveRealtimeFrontendConfiguration({ ...env, QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_API_KEY: '' })
+  assert.equal(blank.profiles['gpt-live'].configured, false)
+  assert.equal(blank.credential, '')
+})
+
+test('a realtime profile rejects the other provider model', () => {
+  assert.throws(() => resolveRealtimeFrontendConfiguration({
+    QWEN_AUDIO_REALTIME_PROFILES: 'qwen,gpt-live',
+    QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_MODEL: 'qwen-audio-3.1-realtime-plus',
+  }), /不属于 gpt-live 支持的模型/)
+})

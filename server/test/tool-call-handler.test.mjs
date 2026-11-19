@@ -3197,3 +3197,22 @@ test('notes: unavailable without a notes store', async () => {
   })
   assert.equal(kit.outputs.at(-1)[1].error_code, 'notes_unavailable')
 })
+
+test('Graphiti read keeps its spoken result pending while input transcription finishes', async () => {
+  const transcript = Promise.withResolvers()
+  const kit = harness({ memoryStore: {
+    describe: () => ({ provider: { key: 'graphiti' } }),
+    capabilities: () => ({ semanticQuery: true }),
+    query: async () => ({ memories: [], context: '用户的猫叫银杏布丁' }),
+  } })
+  kit.transcripts.transcript = () => transcript.promise
+  const pending = responseToolCall(kit.handler, 'delayed-read', 'memory', 'read-with-preamble', {
+    action: 'read', query: '我的猫叫什么',
+  })
+  assert.equal(kit.handler.requiresToolResultSummary('read-with-preamble'), true)
+  await kit.handler.finishToolResponse('read-with-preamble', { sourceHasSpeech: true })
+  assert.equal(kit.ensuredResponses.length, 0)
+  transcript.resolve('我的猫叫什么')
+  await pending
+  assert.equal(kit.ensuredResponses.length, 1)
+})

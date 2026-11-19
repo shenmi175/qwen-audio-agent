@@ -46,11 +46,18 @@ export function insertByTurn(items, message) {
 }
 
 export function mergeConversationHistory(items, history = []) {
-  const currentIds = new Set(items.map(message => message.id))
+  // Durable records and live events use different prefixes for the same turn.
+  // Reconcile by identity, never by text (repeated utterances may be intentional).
+  const identity = message => String(message.id || message.messageId || '')
+    .replace(/^voice:user:/, 'user:')
+    .replace(/^voice:assistant:/, 'voice:')
+  const current = new Map(items.map(message => [identity(message), message]))
+  const restoredIds = new Set()
   const restored = history.flatMap(message => {
-    const id = String(message.id || message.messageId || '')
+    const id = identity(message)
     const content = String(message.content || '').trim()
-    if (!id || !content || currentIds.has(id)) return []
+    if (!id || !content || restoredIds.has(id)) return []
+    restoredIds.add(id)
     return [{
       id,
       role: message.role === 'user' ? 'user' : 'assistant',
@@ -68,10 +75,12 @@ export function mergeConversationHistory(items, history = []) {
       voice: message.source === 'voice-user',
       final: true,
       live: false,
+      ...current.get(id),
+      id,
     }]
   })
   return recentConversationMessages(
-    [...restored, ...items],
+    [...restored, ...items.filter(message => !restoredIds.has(identity(message)))],
     RECENT_CONVERSATION_MESSAGE_LIMIT,
   )
 }

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { MEMORY_DOCUMENTS, canonicalScope, isMemoryDocument } from './scopes.mjs'
 import { toolFailure } from '../frontend/tools/tool-result.mjs'
 
@@ -69,12 +70,7 @@ export function graphitiReadTool(tool) {
   }
 }
 
-export const graphitiVoiceInstructions = [
-  '长期记忆由后台在本次会话结束后处理。用户普通陈述或自然说一件事变了时，直接按新信息接话，不提后台处理，不调用记忆工具。',
-  '只有用户明确要求管理长期记忆时，才简短确认收到，并说明会话结束后处理。',
-  `可以回复「${GRAPHITI_RECEIPT}」不查询记忆、不复述待遗忘内容、不调用其他工具代办。`,
-  '当前会话中不得声称后台操作已经完成，包括「已记住」「已更正」「已忘记」「以后不会再提」。',
-].join('\n')
+export const graphitiVoiceInstructions = readFileSync(new URL('../../../config/prompts/frontend/memory-voice.md', import.meta.url), 'utf8').trim()
 
 async function executeMemoryToolCall(runtime, {
   callId,
@@ -88,6 +84,7 @@ async function executeMemoryToolCall(runtime, {
   const deferred = runtime.beginDeferredToolResponse(responseId, {
     turnId,
     turnGeneration: generation,
+    requiresResultSummary: args?.action === 'read',
   })
   try {
     await memory(runtime, callId, turnId, args, deferred

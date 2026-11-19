@@ -144,11 +144,13 @@ export class ConversationSync {
     createdAt = null,
     historyPosition = null,
     final = true,
+    memoryModelFamily,
   }, { notify = true } = {}) {
     const normalized = clean(content)
     // Runtime sources record final text only. Do not let an accidental partial
     // create (or overwrite) a durable message or consume its history position.
     if (final === false || !id || !normalized) return null
+    const recordContext = { ownerId, sessionId, ...(memoryModelFamily ? { memoryModelFamily } : {}) }
     const state = this.state(ownerId, sessionId)
     const existing = state.byId.get(id)
     if (existing) {
@@ -168,7 +170,7 @@ export class ConversationSync {
       const snapshot = { ...existing }
       if (notify) {
         if (changed) this.#recordPending(state, snapshot)
-        this.notifyRecords(snapshot, { ownerId, sessionId })
+        this.notifyRecords(snapshot, recordContext)
       try { this.onRecord?.(snapshot, { ownerId, sessionId }) } catch { /* observers must not affect sync */ }
       }
       return snapshot
@@ -205,7 +207,7 @@ export class ConversationSync {
     const snapshot = { ...message }
     if (notify) {
       this.#recordPending(state, snapshot)
-      this.notifyRecords(snapshot, { ownerId, sessionId })
+      this.notifyRecords(snapshot, recordContext)
       try { this.onRecord?.(snapshot, { ownerId, sessionId }) } catch { /* observers must not affect sync */ }
     }
     return snapshot

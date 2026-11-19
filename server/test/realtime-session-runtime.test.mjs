@@ -91,7 +91,7 @@ async function until(predicate) {
 
 function harness(t, {
   backend = true, ownerId = 'runtime-owner', sessionId = 'conversation',
-  taskManager = new TaskManager(), ...overrides
+  taskManager = new TaskManager(), providerKey = 'test', ...overrides
 } = {}) {
   const events = [], frontends = [], tasks = [], observations = [], done = [], logs = []
   const runs = new Map(), memoryListeners = new Set()
@@ -101,7 +101,7 @@ function harness(t, {
     level, (event, fields = {}) => logs.push({ level, event, fields }),
   ]))
   const provider = {
-    key: 'test', label: 'Test', inputSampleRate: 16000, outputSampleRate: 24000,
+    key: providerKey, label: 'Test', inputSampleRate: 16000, outputSampleRate: 24000,
     capabilities: { sessionOutputVoice: true },
     classifyError: message => message === 'input busy' ? 'input_busy'
       : message === 'unsafe' ? 'content_safety' : 'other',
@@ -138,7 +138,7 @@ function harness(t, {
     },
     inputAssets: new InputAssetRegistry(), conversationSync,
     config: { sleepTimeoutMs: 0, announcementQuietMs: 0, announcementBatchMs: 0, taskNotificationClaimTtlMs: 60000 },
-    realtimeProviderRegistry: { resolve: () => provider }, defaultRealtimeProvider: 'test',
+    realtimeProviderRegistry: { resolve: () => provider }, defaultRealtimeProvider: providerKey,
     taskAnnouncementFactory: createTaskAnnouncementRuntime,
     realtimeFrontendFactory: options => {
       const f = {
@@ -186,6 +186,25 @@ function harness(t, {
   return { runtime, send, connect, request, manager, operations, events, frontends, runs, tasks, observations,
     done, logs, memoryListeners, provider, conversationSync, ownerId, sessionId }
 }
+
+test('recording tags both sides of the conversation with the server-selected provider family', async t => {
+  for (const [providerKey, modelFamily] of [['dashscope', 'qwen'], ['gpt-live', 'openai']]) {
+    const h = harness(t, { providerKey })
+    const records = []
+    h.conversationSync.subscribeRecords((message, context) => records.push({ message, context }))
+    const frontend = await h.connect({}, { capabilitiesNegotiated: true, capabilities: ['input.audio', 'input.text'] })
+    h.send({ type: Input.TEXT_MESSAGE, text: '您好', memoryModelFamily: 'client-supplied' })
+    await until(() => frontend.inputs.length === 1)
+    frontend.emit({ type: 'response.created', response: { id: 'r' } })
+    frontend.emit({ type: 'response.audio.delta', response_id: 'r', delta: 'AAA=' })
+    frontend.emit({ type: 'response.audio_transcript.done', response_id: 'r', transcript: '你好' })
+    frontend.emit({ type: 'response.done', response: { id: 'r', status: 'completed' } })
+    assert.deepEqual(records.map(({ message, context }) => [message.role, context.memoryModelFamily]), [
+      ['user', modelFamily], ['assistant', modelFamily],
+    ])
+    assert.equal(records.some(({ message }) => 'memoryModelFamily' in message), false)
+  }
+})
 
 test('negotiated receipt-less audio keeps result notifications pending while tasks and conversation work', async t => {
   const h = harness(t)

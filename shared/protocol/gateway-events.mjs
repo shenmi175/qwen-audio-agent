@@ -196,6 +196,7 @@ const GatewayClientPayloadSchemas = Object.freeze({
     clientInstanceId: z.string().min(1).optional(),
     timeZone: z.string().min(1).optional(),
     locale: z.string().min(1).optional(),
+    conversationLanguage: z.enum(['zh', 'en', 'auto']).optional(),
     workingDirectory: z.string().min(1).optional(),
     inputCapabilities: z.object({
       text: z.boolean().optional(),

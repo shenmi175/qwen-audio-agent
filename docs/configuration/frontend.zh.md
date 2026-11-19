@@ -36,7 +36,22 @@ QWEN_AUDIO_REALTIME_URL=
 QWEN_AUDIO_REALTIME_VOICE=
 ```
 
-所有前台使用相同的五个字段，只描述当前连接，不分别保存每家供应商的配置。切换供应商时，同时替换 Key 和模型，清空或替换地址、音色。前台凭据与后台、搜索、记忆服务的凭据独立。
+单供应商模式使用相同的五个字段描述当前连接。切换供应商时，同时替换 Key 和模型，清空或替换地址、音色。前台凭据与后台、搜索、记忆服务的凭据独立。
+
+### 在网页切换 Qwen 和 OpenAI
+
+可在同一份服务端 `config.env` 中启用两套语音配置。先设置默认供应商，再分别填入各自的模型和密钥。
+
+```dotenv
+QWEN_AUDIO_REALTIME_PROVIDER=gpt-live
+QWEN_AUDIO_REALTIME_PROFILES=dashscope,gpt-live
+QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_API_KEY=
+QWEN_AUDIO_REALTIME_PROFILE_DASHSCOPE_MODEL=qwen-audio-3.1-realtime-plus
+QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_API_KEY=
+QWEN_AUDIO_REALTIME_PROFILE_GPT_LIVE_MODEL=gpt-realtime-2.1
+```
+
+各配置还支持同前缀的 `URL` 和 `VOICE`，留空使用该供应商默认值。网页设置的供应商和模型选择在新语音连接中生效。支持两个系列的 Graphiti 组件按会话实际使用的系列筛选和建图，跨系列仍访问同一张图。参见 [Graphiti 模型档位与迁移](../../components/graphiti/README.zh.md)。
 
 ## 连接配置
 
@@ -117,4 +132,37 @@ qwenaudio config set --realtime-model qwen-audio-3.1-realtime-flash
 
 供应商专属的旧前台变量仅兼容读取，上述五个统一字段优先，包括显式留空。旧文件若同时含有统一的模型/音色字段和其他供应商的模型/音色字段，需将当前所选供应商需要的值写入统一字段。Omni 原有的 `QWEN_OMNI_REALTIME_VOICE` 应移至 `QWEN_AUDIO_REALTIME_VOICE`。
 
-现在只保存当前连接，不再分别持久化各供应商草稿。旧变量不会自动删除，因为后台 Agent、搜索或其他模块可能仍在使用；迁移后可自行清理仅用于前台的废弃覆盖项。更多优先级规则见[配置总览](../configuration.zh.md#配置优先级)。
+桌面版保存当前连接。需要在网页按会话选择独立供应商时，使用上面的服务端配置。旧变量不会自动删除，因为后台 Agent、搜索或其他模块可能仍在使用。更多优先级规则见[配置总览](../configuration.zh.md#配置优先级)。
+
+## 提示词编辑
+
+Mac 本机网页“设置 → 提示词”打开独立的 `/prompts` 页面，不建立语音连接。
+五个 Tab 分别管理对话行为、人格与表达、记忆交互、记忆筛选、图谱提取；记忆筛选另有轻量、标准、深入三个档位。
+Qwen 与 OpenAI 共用这些表达与筛选策略，模型、凭据及协议适配继续按系列独立管理。
+
+编辑器直接读写 `QWAUDIO_PROMPTS_DIR`（默认 `runtime/prompts`），没有新增模型配置入口。
+默认模板位于 `config/prompts`。前台三份提示词保存后刷新快照，在当前回复结束后应用；
+后台筛选在新任务开始时读取对应档位，图谱提取在下一次入图时读取。
+切换 Tab 保留未保存草稿；离开时提醒；版本冲突返回 409，避免覆盖另一页面的修改。
+该配置影响整个本地部署，管理接口只接受本机身份，并复用 Gateway 的认证与同源检查。
+工具参数、确认授权、证据校验、队列隔离及 JSON 输出结构仍由程序维护。
+
+设计参考：
+
+- [OpenAI Realtime 提示词指南](https://developers.openai.com/api/docs/guides/voice-prompting)：从简短提示开始，按具体触发条件定义行为，用实测发现需要补充的规则。
+- [dsh-fish 大肥鱼](https://github.com/ssamurias/dsh-fish)：参考简短常驻提示、真实经历与当前情境分离、减少清单式催促的思路。其成长循环、主动联网和不可删除历史属于该插件的产品选择，本次保留本项目现有的用户控制与遗忘机制。
+- [社区鲸鱼娘人格插件](https://github.com/Kaalia0912/dsh-whale-musume-persona)：参考人格与能力边界分离、性格及表达的组织方式；不是 DeepSeek 官方角色，也没有安装该插件。
+- [SillyTavern 角色设计](https://docs.sillytavern.app/usage/characters/)：分离角色描述、人格和对话示例。本项目使用原创简短示例，未复制他人的角色内容。
+
+人格不参与后台记忆筛选。记忆策略仅描述保留范围、证据归属和隐私；旧的循环读写工具流程已删除。
+
+### 搜索随语音系列路由
+
+默认搜索为 Bing；每个 `gpt-live` 连接固定使用 OpenAI Responses 的官方 `web_search`，不会失败后回落到其他厂商。
+使用 GPT 语音配置的密钥，模型可在同一个 `config.env` 设置 `QWEN_AUDIO_OPENAI_SEARCH_MODEL`，默认 `gpt-6.1-terra`。
+`QWEN_AUDIO_WEB_SEARCH_PROVIDER=bing` 负责其他系列的默认搜索。
+OpenAI 路径检查真实 `web_search_call` 已完成和 URL 引用，结果复用原页面的引用展示。
+搜索按需调用，不在普通聊天中额外请求；OpenAI 搜索等待上限 25 秒，其他路径保留 8 秒，关闭会话会取消请求。
+
+GPT 当前直接接收 24 kHz 音频，输入转写配置为 `gpt-transcribe`，实时对话模型为 `gpt-realtime-2.1`。
+转写用于文字展示、历史和记忆；它不是实时模型理解音频的必经文本链路。

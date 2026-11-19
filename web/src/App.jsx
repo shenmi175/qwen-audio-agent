@@ -26,7 +26,13 @@ import WebVoiceOrb, { WebOrbVisual } from './web-ui/WebVoiceOrb.jsx'
 import WebPreferences from './web-ui/WebPreferences.jsx'
 import { webConnectionIndicator } from './web-ui/connection-status.js'
 import WebShareDialog from './web-ui/WebShareDialog.jsx'
-import { loadWebPreferences, normalizeWebPreferences, WEB_UI_PREFERENCES_KEY } from './web-ui/preferences.js'
+import {
+  loadWebPreferences,
+  normalizeWebPreferences,
+  realtimeConnectSelection,
+  realtimeProviderSettings,
+  WEB_UI_PREFERENCES_KEY,
+} from './web-ui/preferences.js'
 import './web-ui/web-ui.css'
 import {
   desktopOrbClassName,
@@ -231,7 +237,7 @@ export default function App() {
     }
   }, [webPreferences])
   const [connectionEnabled, setConnectionEnabled] = useState(() => (
-    desktopOrbMode || sessionStorage.getItem('qwaudio.connection-enabled') !== 'false'
+    desktopOrbMode
   ))
   useEffect(() => {
     if (!desktopOrbMode) sessionStorage.setItem('qwaudio.connection-enabled', String(connectionEnabled))
@@ -247,7 +253,9 @@ export default function App() {
   const [frontend, setFrontend] = useState({ label: 'Realtime Agent' })
   const [modelStatus, setModelStatus] = useState(() => realtimeModelStatus())
   const confirmedModel = useRef('')
-  const [modelSettings, setModelSettings] = useState({ catalog: [], defaultModel: '', activeModel: '' })
+  const [modelSettings, setModelSettings] = useState({
+    providers: [], defaultProvider: '', activeProvider: '', activeModel: '', loaded: false,
+  })
   const videoCallSupported = !compactVoiceControl
     && modelStatus.modelInputModes.includes('video')
     && modelStatus.transportInputModes.includes('video')
@@ -465,11 +473,11 @@ export default function App() {
           backendPayload.kind || backendPayload.protocol,
         )
         const label = payload.backend?.label || payload.backend?.kind || 'Agent'
-        setFrontend({
-          label: payload.realtimeLabel || payload.realtimeProvider || 'Realtime Agent',
-        })
-        if (!confirmedModel.current) setModelStatus(realtimeModelStatus(payload))
-        setModelSettings(previous => ({ ...previous, catalog: payload.realtimeModelCatalog || [], defaultModel: payload.realtimeModel || '', provider: payload.realtimeProvider }))
+        if (!confirmedModel.current) {
+          setFrontend({ label: payload.realtimeLabel || payload.realtimeProvider || 'Realtime Agent' })
+          setModelStatus(realtimeModelStatus(payload))
+        }
+        setModelSettings(previous => ({ ...previous, ...realtimeProviderSettings(payload), loaded: true }))
         setWebCapabilities({ knowledge: payload.frontendKnowledge?.configured === true,
           memory: payload.frontendMemory, memoryLearning: payload.memoryLearning,
           realtimeIdleTimeoutMs: payload.realtimeIdleTimeoutMs })
@@ -498,6 +506,7 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return
+        setModelSettings(previous => ({ ...previous, loaded: true }))
         setGatewayRuntime('failed')
         setActivity(t('qwen-audio-agent Gateway 尚未连接'))
         if (desktopOrbMode) refreshTimer = setTimeout(refresh, 1000)
@@ -542,7 +551,10 @@ export default function App() {
     if (event.type === 'voice.ready' && event.realtimeModel) {
       confirmedModel.current = event.realtimeModel
       setModelStatus(realtimeModelStatus(event))
-      setModelSettings(previous => ({ ...previous, activeModel: event.realtimeModel }))
+      if (event.providerLabel || event.provider) setFrontend({ label: event.providerLabel || event.provider })
+      setModelSettings(previous => ({
+        ...previous, activeProvider: event.provider || previous.defaultProvider, activeModel: event.realtimeModel,
+      }))
     }
 
     const animationEvent = spriteAnimationEventForGatewayEvent(event)
@@ -885,11 +897,17 @@ export default function App() {
     && desktopLifecycle === 'hidden'
     && wakeWordEnabled
   )
+  const realtimeSelection = realtimeConnectSelection(webPreferences, modelSettings)
+  const waitingForModelCatalog = !desktopOrbMode && !modelSettings.loaded && Boolean(
+    webPreferences.realtimeProvider || webPreferences.realtimeModel || Object.keys(webPreferences.realtimeModels).length,
+  )
   const voice = useRealtimeVoice({
     sessionId,
-    model: webPreferences.realtimeModel,
-    connectionEnabled,
-    enabled: connectionEnabled && (voiceEnabled || voiceEnabledForWakeWord),
+    conversationLanguage: webPreferences.conversationLanguage,
+    provider: desktopOrbMode ? '' : realtimeSelection.provider,
+    model: desktopOrbMode ? webPreferences.realtimeModel : realtimeSelection.model,
+    connectionEnabled: connectionEnabled && !waitingForModelCatalog,
+    enabled: connectionEnabled && !waitingForModelCatalog && (voiceEnabled || voiceEnabledForWakeWord),
     suspended: desktopOrbMode && desktopLifecycle === 'hidden' && !wakeWordEnabled,
     outputMuted: false,
     // WebUI and desktop share one control contract: the toggle only changes
@@ -1198,6 +1216,25 @@ export default function App() {
   const updateWebPreferences = update => {
     if (update.surface === 'orb') setVideoCallOpen(false)
     setWebPreferences(current => normalizeWebPreferences({ ...current, ...update }))
+  }
+
+  const applyRealtimeModel = ({ provider, model }) => {
+    const key = provider || modelSettings.defaultProvider
+    if (!key) return
+    const update = {
+      realtimeProvider: provider,
+      realtimeModels: { ...webPreferences.realtimeModels, [key]: model },
+    }
+    const next = realtimeConnectSelection({ ...webPreferences, ...update }, modelSettings)
+    const activeProvider = voice.connectionState === 'connected' ? modelSettings.activeProvider : ''
+    const currentProvider = activeProvider || realtimeSelection.provider || modelSettings.defaultProvider
+    if (currentProvider && currentProvider !== key) resetSession()
+    if (next.provider !== realtimeSelection.provider || next.model !== realtimeSelection.model) {
+      setVideoCallOpen(false)
+      setModelStatus(realtimeModelStatus())
+      setModelSettings(previous => ({ ...previous, activeProvider: '', activeModel: '' }))
+    }
+    updateWebPreferences(update)
   }
 
   const sendComposerInput = parts => {
@@ -1554,10 +1591,11 @@ export default function App() {
       </button>}
     </header>
     </> : <header className="web-minimal-header">
-      <div className={`web-connection-indicator ${webIndicator}`} role="status"
-        aria-label={webStatusText} title={webStatusText}>
+      <button type="button" className={`web-connection-indicator ${webIndicator}`}
+        aria-label={webStatusText} title={webStatusText} aria-haspopup="dialog"
+        aria-expanded={webSettingsOpen} onClick={() => setWebSettingsOpen(true)}>
         <span aria-hidden="true" />
-      </div>
+      </button>
       <button type="button" className="web-settings-trigger" aria-label={t('设置')}
         title={t('设置')} aria-haspopup="dialog" aria-expanded={webSettingsOpen}
         onClick={() => setWebSettingsOpen(true)}><OrbControlIcon type="settings" /></button>
@@ -1650,7 +1688,7 @@ export default function App() {
     {!desktopOrbMode && webSettingsOpen && <WebPreferences
       sessionId={sessionId} preferences={webPreferences} onChange={updateWebPreferences}
       onClose={() => setWebSettingsOpen(false)} modelLabel={modelLabel}
-      modelSettings={modelSettings} onSelectModel={model => { setVideoCallOpen(false); updateWebPreferences({ realtimeModel: model }) }}
+      modelSettings={modelSettings} onSelectModel={applyRealtimeModel} modelConnected={voice.connectionState === 'connected'}
       modelInputModes={modelStatus.modelInputModes} backendEnabled={backend.enabled === true}
       knowledgeConfigured={webCapabilities.knowledge}
       memoryStatus={webCapabilities.memory} memoryLearning={webCapabilities.memoryLearning}

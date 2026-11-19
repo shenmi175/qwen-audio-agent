@@ -163,6 +163,7 @@ export const GatewaySessionHelloSchema = GatewayClientEnvelopeSchema.extend({
     model: z.string().min(1).max(200).optional(),
     output_voice: z.string().min(1).max(160).optional(),
     working_directory: z.string().min(1).max(4096).optional(),
+    conversation_language: z.enum(['zh', 'en', 'auto']).optional(),
     client_states: z.array(z.string().min(1).max(80)).max(16).optional(),
     takeover: z.boolean().optional(),
   }).optional(),
@@ -536,6 +537,9 @@ export function gatewayHelloAsLegacyConnect(hello) {
         : {}),
       ...(parsed.connection.working_directory
         ? { workingDirectory: parsed.connection.working_directory }
+        : {}),
+      ...(parsed.connection.conversation_language
+        ? { conversationLanguage: parsed.connection.conversation_language }
         : {}),
       ...(parsed.connection.client_states
         ? { clientStates: parsed.connection.client_states }

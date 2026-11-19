@@ -56,6 +56,7 @@ function connectionConfiguration(value = {}) {
     ...(value.wakeWordOnly === undefined ? {} : { wake_word_only: value.wakeWordOnly === true }),
     ...(value.provider ? { provider: String(value.provider) } : {}),
     ...(value.model ? { model: String(value.model) } : {}),
+    ...(value.conversationLanguage ? { conversation_language: value.conversationLanguage } : {}),
     ...(value.outputVoice ? { output_voice: String(value.outputVoice) } : {}),
     ...(value.workingDirectory ? { working_directory: String(value.workingDirectory) } : {}),
     ...(Array.isArray(value.clientStates) ? { client_states: value.clientStates } : {}),

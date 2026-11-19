@@ -15,6 +15,8 @@ export class FrontendRetrievalRuntime {
     searchProvider = null,
     urlFetcher = new SafeUrlFetcher(),
     searchTimeoutMs = 8_000,
+    searchProviders = {},
+    defaultRealtimeProvider = '',
   } = {}) {
     this.searchProvider = searchProvider
       ? validateWebSearchProvider(searchProvider)
@@ -24,11 +26,24 @@ export class FrontendRetrievalRuntime {
     }
     this.urlFetcher = urlFetcher
     this.searchTimeoutMs = searchTimeoutMs
+    this.searchProviders = Object.fromEntries(Object.entries(searchProviders).map(([key, provider]) => [key, validateWebSearchProvider(provider)]))
+    this.defaultRealtimeProvider = defaultRealtimeProvider
   }
 
-  capabilities() {
+  provider(key = this.defaultRealtimeProvider) { return this.searchProviders[key] || this.searchProvider }
+
+  forProvider(resolveProvider) {
+    return {
+      capabilities: () => this.capabilities(resolveProvider()),
+      describe: () => this.describe(resolveProvider()),
+      search: (query, options) => this.search(query, { ...options, realtimeProvider: resolveProvider() }),
+      fetchUrl: (...args) => this.fetchUrl(...args),
+    }
+  }
+
+  capabilities(key) {
     return [
-      ...(this.searchProvider?.isConfigured()
+      ...(this.provider(key)?.isConfigured()
         ? [FRONTEND_RETRIEVAL_CAPABILITIES.WEB_SEARCH]
         : []),
       ...(this.urlFetcher
@@ -37,26 +52,29 @@ export class FrontendRetrievalRuntime {
     ]
   }
 
-  describe() {
+  describe(key) {
     return {
-      capabilities: this.capabilities(),
-      searchProvider: this.searchProvider?.describe() || null,
+      capabilities: this.capabilities(key),
+      searchProvider: this.provider(key)?.describe() || null,
+      defaultSearchProvider: this.searchProvider?.describe() || null,
+      byRealtimeProvider: Object.fromEntries(Object.entries(this.searchProviders).map(([key, provider]) => [key, provider.describe()])),
     }
   }
 
-  async search(query, { limit = 5, signal } = {}) {
-    if (!this.searchProvider?.isConfigured()) {
+  async search(query, { limit = 5, signal, realtimeProvider } = {}) {
+    const provider = this.provider(realtimeProvider)
+    if (!provider?.isConfigured()) {
       throw new Error('Web Search Provider 未配置')
     }
     const boundedLimit = Math.max(
       1,
       Math.min(8, Math.trunc(Number(limit) || 5)),
     )
-    const timeoutSignal = AbortSignal.timeout(this.searchTimeoutMs)
+    const timeoutSignal = AbortSignal.timeout(provider.describe().key === 'openai' ? 25000 : this.searchTimeoutMs)
     const searchSignal = signal
       ? AbortSignal.any([signal, timeoutSignal])
       : timeoutSignal
-    const response = await this.searchProvider.search(
+    const response = await provider.search(
       String(query || '').trim(),
       { limit: boundedLimit, signal: searchSignal },
     )

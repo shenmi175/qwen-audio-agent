@@ -148,6 +148,14 @@ export function createRealtimeSessionRuntime({
   const transcripts = new TurnTranscripts()
   const turnCitations = new TurnCitations()
   let realtimeSession
+  frontendRetrieval = frontendRetrieval?.forProvider?.(() => realtimeSession?.providerKey) || frontendRetrieval
+  const sessionConversationRecords = {
+    record(message) {
+      const provider = realtimeSession?.providerKey
+      const memoryModelFamily = provider === 'gpt-live' ? 'openai' : provider === 'dashscope' ? 'qwen' : undefined
+      return conversationSync.record({ ...message, memoryModelFamily })
+    },
+  }
   let turnMemory = []
   let memoryReadVersion = 0
   const graphitiMemory = memoryService?.describe?.().provider?.key === 'graphiti'
@@ -223,7 +231,7 @@ export function createRealtimeSessionRuntime({
       }),
     }),
     onTaskEvent,
-    onResult: task => recordTaskResult({ conversationSync, ownerId, sessionId, task }),
+    onResult: task => recordTaskResult({ conversationSync: sessionConversationRecords, ownerId, sessionId, task }),
     onWake: () => wakeFromSleep(),
   })
   const { results: announcements, progress: progressAnnouncements } = taskCoordinator.announcements
@@ -585,7 +593,7 @@ export function createRealtimeSessionRuntime({
     turns,
     transcripts,
     inputAssets,
-    conversationSync,
+    conversationSync: sessionConversationRecords,
     announcementWindow,
     announcements,
     send: event => emit(event),
@@ -611,7 +619,7 @@ export function createRealtimeSessionRuntime({
     ownerId,
     sessionId,
     turns,
-    conversationSync,
+    conversationSync: sessionConversationRecords,
     announcementWindow,
     announcements,
     toolCalls,
@@ -986,10 +994,13 @@ export function createRealtimeSessionRuntime({
       // Legacy clients predate negotiation and already send playback receipts.
       playbackReceipts = !capabilitiesNegotiated
         || negotiatedCapabilities.includes(GatewayClientCapability.PLAYBACK_RECEIPTS)
-      sessionOutputVoice = String(event.outputVoice || '').trim()
       const requestedModel = String(event.model || '').trim()
+      let selectedProvider
       try {
-        const selectedProvider = realtimeProviderRegistry.resolve(event.provider || realtimeSession.providerKey)
+        selectedProvider = realtimeProviderRegistry.resolve(event.provider || realtimeSession.providerKey)
+        if (selectedProvider.key !== realtimeSession.providerKey && !selectedProvider.isConfigured()) {
+          throw new Error(selectedProvider.missingConfigurationMessage || '所选实时语音服务尚未配置')
+        }
         if (requestedModel && requestedModel !== selectedProvider.model?.()) {
           if (typeof selectedProvider.withModel !== 'function') throw new Error('当前 Provider 不支持会话级模型选择')
           selectedProvider.withModel(requestedModel)
@@ -998,6 +1009,7 @@ export function createRealtimeSessionRuntime({
         emit({ type: 'error', message: error.message })
         return
       }
+      sessionOutputVoice = String(event.outputVoice || '').trim()
       if (requestedModel !== sessionModel) {
         realtimeSession.detach({ clearAudio: true })
         sessionModel = requestedModel
@@ -1006,14 +1018,7 @@ export function createRealtimeSessionRuntime({
       // The client may pick a realtime front end per session. An unknown
       // name is reported instead of silently falling back, so a typo does
       // not look like a working session on the wrong provider.
-      if (event.provider && event.provider !== realtimeSession.providerKey) {
-        try {
-          realtimeSession.switchProvider(event.provider)
-        } catch (error) {
-          emit({ type: 'error', message: error.message })
-          return
-        }
-      }
+      if (selectedProvider.key !== realtimeSession.providerKey) realtimeSession.switchProvider(selectedProvider.key)
       const capabilities = clientVoiceCapabilities({
         voiceEnabled: event.voiceEnabled,
         inputEnabled: event.inputEnabled,
@@ -1034,6 +1039,7 @@ export function createRealtimeSessionRuntime({
       clientContext = normalizeClientContext({
         timeZone: event.timeZone,
         locale: event.locale,
+        conversationLanguage: event.conversationLanguage,
         workingDirectory: event.workingDirectory,
       })
       clientContext.states = (

@@ -32,6 +32,7 @@ export {
 import {
   DEFAULT_REALTIME_PROVIDER,
   REALTIME_PROVIDERS,
+  REALTIME_SETTING_SLOTS,
   realtimeRuntimeEnvironment,
   realtimeSettingsConnection,
   realtimeSettingsFromEnvironment,
@@ -110,9 +111,7 @@ export function assertRealtimeFrontendModel(active) {
   }
 }
 
-export function resolveRealtimeFrontendConfiguration(env = process.env, {
-  modelCatalogs = BUILTIN_REALTIME_MODEL_CATALOGS,
-} = {}) {
+function resolveRealtimeConnection(env, modelCatalogs) {
   const provider = normalizeRealtimeProvider(env.QWEN_AUDIO_REALTIME_PROVIDER)
   const settings = realtimeSettingsFromEnvironment({
     ...env,
@@ -155,4 +154,41 @@ export function resolveRealtimeFrontendConfiguration(env = process.env, {
       + (environmentAliases.length ? `（也支持 ${environmentAliases.join('、')}）` : '')
       + '。请运行 qwenaudio config 查看配置文件位置。',
   }
+}
+
+const REALTIME_ENV_PREFIX = 'QWEN_AUDIO_REALTIME_'
+
+export function configuredRealtimeProviderProfiles(env) {
+  return new Set(clean(env.QWEN_AUDIO_REALTIME_PROFILES).split(',')
+    .map(name => name.trim()).filter(Boolean).map(name => normalizeRealtimeProvider(name)))
+}
+
+export function realtimeProviderProfilePrefix(provider) {
+  return `${REALTIME_ENV_PREFIX}PROFILE_${provider.replaceAll('-', '_').toUpperCase()}_`
+}
+
+export function resolveRealtimeFrontendConfiguration(env = process.env, {
+  modelCatalogs = BUILTIN_REALTIME_MODEL_CATALOGS,
+} = {}) {
+  const activeProvider = normalizeRealtimeProvider(env.QWEN_AUDIO_REALTIME_PROVIDER)
+  const byProvider = new Map()
+  for (const provider of configuredRealtimeProviderProfiles(env)) {
+    const prefix = realtimeProviderProfilePrefix(provider)
+    const isolated = { QWEN_AUDIO_REALTIME_PROVIDER: provider }
+    for (const field of REALTIME_SETTING_SLOTS) {
+      const key = field.environment[0]
+      isolated[key] = env[prefix + key.slice(REALTIME_ENV_PREFIX.length)] ?? ''
+    }
+    const connection = resolveRealtimeConnection(isolated, modelCatalogs)
+    assertRealtimeFrontendModel(connection.active)
+    byProvider.set(provider, {
+      ...connection,
+      missingConfigurationMessage: `缺少 ${prefix}${PROVIDERS[provider].requiredConfiguration.key.slice(REALTIME_ENV_PREFIX.length)}。`,
+    })
+  }
+  const selected = byProvider.get(activeProvider) || resolveRealtimeConnection(env, modelCatalogs)
+  const profiles = Object.fromEntries(Array.from(byProvider, ([provider, connection]) => [
+    provider, Object.freeze({ ...connection.active, credential: connection.credential }),
+  ]))
+  return { ...selected, profiles: Object.freeze(profiles) }
 }

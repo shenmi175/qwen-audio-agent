@@ -1,3 +1,4 @@
+import { registerPromptRoutes } from '../prompts/routes.mjs'
 import { diagnosticsHealth } from '../../../components/diagnostics/node.mjs'
 import express from 'express'
 import { randomUUID } from 'node:crypto'
@@ -351,6 +352,8 @@ export function registerGatewayHttpRoutes(app, {
       },
     })
   })
+
+  registerPromptRoutes(app)
 
   for (const module of optionalModules) module.mountRoutes?.(app)
 

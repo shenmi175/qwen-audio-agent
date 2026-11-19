@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { recentConversationMessages } from '../../../shared/conversation-history.mjs'
+import { normalizeConversationLanguage, conversationLanguageInstructions } from '../../../shared/conversation-language.mjs'
 
 const MAX_ASSISTANT_CHARS = 4000
 const MAX_RECENT_CHARS = 3500
@@ -20,10 +21,13 @@ export async function initializeFrontendPrompt() {
   if (pending) return pending
   pending = (async () => {
     const directory = process.env.QWAUDIO_PROMPTS_DIR || defaultPromptDirectory
-    const entries = await Promise.all(['assistant-behavior', 'assistant-persona'].map(async key => {
+    const entries = await Promise.all(['assistant-behavior', 'assistant-persona', 'memory-voice'].map(async key => {
       let prompt
       try { prompt = await readFile(resolve(directory, 'frontend', key + '.md'), 'utf8') }
-      catch { throw new Error('LOCAL_PROMPT_UNAVAILABLE') }
+      catch (error) {
+        if (key === 'memory-voice' && error.code === 'ENOENT') prompt = await readFile(new URL('../../../config/prompts/frontend/memory-voice.md', import.meta.url), 'utf8')
+        else throw new Error('LOCAL_PROMPT_UNAVAILABLE')
+      }
       if (!prompt.trim()) throw new Error('LOCAL_PROMPT_INVALID')
       return [key, { prompt, version: createHash('sha256').update(prompt).digest('hex').slice(0, 12) }]
     }))
@@ -51,6 +55,7 @@ function clean(value) {
 export function normalizeClientContext({
   timeZone,
   locale,
+  conversationLanguage,
   workingDirectory,
 } = {}) {
   let safeTimeZone = clean(timeZone)
@@ -73,6 +78,7 @@ export function normalizeClientContext({
   return {
     timeZone: safeTimeZone,
     locale: safeLocale,
+    conversationLanguage: normalizeConversationLanguage(conversationLanguage),
     workingDirectory: safeWorkingDirectory || null,
   }
 }
@@ -157,5 +163,9 @@ export function buildFrontendContext({
       : []),
     '</runtime_context>',
   ].join('\n')
-  return runtimeContext
+  return runtimeContext + '\n\n# 对话语言\n' + conversationLanguageInstructions(normalizedClient.conversationLanguage)
+}
+
+export function loadMemoryVoicePrompt() {
+  return snapshot?.values['memory-voice']?.prompt || ''
 }

@@ -51,7 +51,7 @@
 .web-share-list button { padding: 7px 12px; border: 1px solid #ffffff24; border-radius: 8px; background: #ffffff08; color: #e4def1; }
 .web-orb-mode-hint button + button { margin-left: 8px; }
 .web-app > .web-minimal-header { position: relative; z-index: 50; height: 68px; min-height: 68px; padding: 0 28px; justify-content: space-between; flex-wrap: nowrap; border: 0; background: transparent; backdrop-filter: none; }
-.web-connection-indicator { display: grid; place-items: center; width: 32px; height: 40px; }
+.web-connection-indicator { display: grid; place-items: center; width: 32px; height: 40px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .web-connection-indicator > span { width: 8px; height: 8px; border-radius: 50%; background: #777982; }
 .web-connection-indicator.connected > span { background: #48dbab; box-shadow: 0 0 12px #48dbab66; }
 .web-connection-indicator.error > span { background: #ff6576; box-shadow: 0 0 12px #ff65764d; }

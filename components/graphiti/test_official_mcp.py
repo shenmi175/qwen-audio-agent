@@ -82,36 +82,51 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.p.queue.fail(self.p.queue.claim('owner'),'RATE_LIMIT',True)
         self.assertEqual(self.p.queue.task('owner',accepted['id'])['status'],'failed')
 
-    async def test_selects_once_and_reuses_validated_plan_without_reenqueuing(self):
+    async def test_complete_conversation_reuses_receipt_without_preselection(self):
         accepted = self.p.queue.submit('owner', 's', 'event', 'observe', {'content': 'evidence'})
         job = self.p.queue.claim('owner')
-        utterance = '我养的猫叫桂花芋圆。'
-        payload = {'content': json.dumps([
-            {'id': 'u', 'role': 'user', 'content': utterance},
-            {'id': 'a', 'role': 'assistant', 'content': '你还养了一只仓鼠。'},
-        ])}
-        good = {'action': 'remember', 'evidence': [{'message_id': 'u', 'excerpt': utterance}]}
-        candidates = [good, good, {'action': 'remember', 'evidence': [
-            {'message_id': 'a', 'excerpt': '你还养了一只仓鼠。'}]}]
-        self.p.llm.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
-            usage=None, choices=[SimpleNamespace(message=SimpleNamespace(
-                tool_calls=None, content=json.dumps({'candidates': candidates})))]))
+        source = [
+            {'id': 'u1', 'role': 'user', 'content': '我在玩那个名字没听清的游戏。'},
+            {'id': 'a1', 'role': 'assistant', 'content': '你说的是候选作品甲吗？'},
+            {'id': 'u2', 'role': 'user', 'content': '对，就是这个。我喜欢它的手绘风格。'},
+        ]
+        self.p.select = AsyncMock(side_effect=AssertionError('No preselection'))
         self.mcp.commit.set()
-        with patch('memory_provider.fetch_prompt', return_value=SimpleNamespace(name='test', version='1', content='policy')):
-            answer = await self.p.agent(job, payload)
-            await self.p.agent(job, payload)
+        with patch('memory_provider.fetch_prompt', return_value=SimpleNamespace(content='Supported user facts.')):
+            answer = await self.p.agent(job, {'content': json.dumps(source)})
+            await self.p.agent(job, {'content': json.dumps(source)})
         self.assertEqual(answer['action'], 'remember')
-        self.assertEqual(self.p.llm.chat.completions.create.await_count, 1)
-        self.assertNotIn('tools', self.p.llm.chat.completions.create.call_args.kwargs)
-        self.assertIn(utterance, self.p.llm.chat.completions.create.call_args.kwargs['messages'][1]['content'])
+        self.assertEqual(answer['agent_steps'], 0)
+        self.p.select.assert_not_awaited()
         writes = [args for name, args in self.mcp.calls if name == 'add_memory']
-        self.assertEqual([write['episode_body'] for write in writes], ['用户: ' + utterance])
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]['episode_body'], '\n'.join(
+            ('用户' if m['role'] == 'user' else '助手') + ': ' + m['content'] for m in source))
+        self.assertEqual(json.loads(writes[0]['source_description'])['message_ids'], ['u1', 'a1', 'u2'])
         self.assertEqual(self.p.queue.task('owner', accepted['id'])['status'], 'processing')
 
-    async def test_selection_can_finish_without_a_graph_operation(self):
-        self.p.select = AsyncMock(return_value=[])
-        self.assertEqual((await self.p.agent(self.job, {'content': '你好'}))['action'], 'none')
+    async def test_assistant_only_batch_does_not_create_user_memory(self):
+        self.p.select = AsyncMock(side_effect=AssertionError('No preselection'))
+        answer = await self.p.agent(self.job, {'content': json.dumps([
+            {'id': 'a', 'role': 'assistant', 'content': '你喜欢跑步。'}])})
+        self.assertEqual(answer['action'], 'none')
         self.assertEqual(self.mcp.calls, [])
+
+    def test_conversation_keeps_late_corrections_and_redacts_private_turn(self):
+        source = [
+            {'id':'u1','role':'user','content':'我喜欢油画风格。'},
+            {'id':'a1','role':'assistant','content':'油画风格吗？'},
+            {'id':'u2','role':'user','content':'不是，是手绘风格。'},
+            {'id':'secret','role':'user','content':'我的密码是 fake-secret，别保存。'},
+            {'id':'echo','role':'assistant','content':'你说的是 fake-secret。'},
+            {'id':'u3','role':'user','content':'我还喜欢历史题材。'},
+        ]
+        plan = self.p.conversation_plan(source)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]['ids'], ['u1','a1','u2','u3'])
+        self.assertIn('助手: 油画风格吗？', plan[0]['body'])
+        self.assertIn('不是，是手绘风格。', plan[0]['body'])
+        self.assertNotIn('fake-secret', plan[0]['body'])
 
     async def test_natural_rename_is_an_episode_with_the_original_temporal_evidence(self):
         utterance = '我养的猫以前叫银杏布丁，现在改名叫桂花芋圆了。'

@@ -36,15 +36,24 @@ export function resolveRealtimeProvider(requested) {
   )
 }
 
+function publicModelCatalog(provider) {
+  return provider.modelCatalog?.()
+    ?? (provider.key === 'dashscope'
+      ? listDashScopeRealtimeModelProfiles(config.realtimeModelCatalogs)
+      : null)
+}
+
 function providerDescriptor(provider) {
+  const catalog = publicModelCatalog(provider)
   return {
     key: provider.key,
     label: provider.label,
     model: provider.model(),
-    realtimeModelIds: provider.modelCatalog?.().map(profile => profile.id)
-      ?? (provider.key === 'dashscope'
-        ? listDashScopeRealtimeModelProfiles(config.realtimeModelCatalogs).map(profile => profile.id)
-        : null),
+    realtimeModelIds: catalog?.map(profile => profile.id) ?? null,
+    realtimeModelCatalog: (catalog ?? []).map(({
+      id, label, api, family, sessionDefaults, modelCapabilities, transportCapabilities, sessionConstraints,
+    }) => ({ id, label, api, family, sessionDefaults, modelCapabilities, transportCapabilities, sessionConstraints })),
+    inputSampleRate: provider.inputSampleRate,
     configured: provider.isConfigured(),
   }
 }
@@ -69,15 +78,12 @@ export function describeActiveRealtime(requested, {
     modelProfile,
     modelCapabilities: modelProfile?.modelCapabilities || null,
     transportCapabilities: modelProfile?.transportCapabilities || null,
-    modelCatalog: provider.modelCatalog?.()
-      ?? (provider.key === 'dashscope'
-        ? listDashScopeRealtimeModelProfiles(config.realtimeModelCatalogs)
-        : []),
+    modelCatalog: publicModelCatalog(provider) ?? [],
     voice: provider.voice(),
     inputSampleRate: provider.inputSampleRate,
     configured: provider.isConfigured(),
     configurationSignature: provider.configurationSignature?.()
-      || config.realtimeConfigSignature,
+      || (provider.key === config.audioProvider ? config.realtimeConfigSignature : null),
     providers: listRealtimeProviders({ registry }),
   }
 }

@@ -1,5 +1,6 @@
 """Authenticated Graphiti component with a durable, versioned work ledger."""
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -62,6 +63,9 @@ async def ready():
     await memory.ready()
     return {'component': 'qwaudio-graphiti', 'status': 'ready', 'graphitiVersion': version('graphiti-core'),
             'database': 'neo4j', 'modelsConfigured': bool(os.environ.get('GRAPHITI_LLM_API_KEY')),
+            'databaseManagement': os.environ.get('GRAPHITI_NEO4J_MANAGEMENT', 'compose'),
+            'databaseTarget': hashlib.sha256(memory.config['uri'].encode()).hexdigest(),
+            'model_families': memory.model_families, 'models_by_family': memory.models(),
             'diagnostics': memory.diagnostics.health(), 'integrationVersion': 6, 'integrationFingerprint': INTEGRATION_FINGERPRINT, 'transport': 'official-mcp', 'structuredOutput': 'qwen-forced-function', 'mcpVersion': '1.1.3', 'mcpCommit': __import__('official_mcp').COMMIT, 'agentModel': memory.model, 'graphModel': memory.config['llm_model'], 'memoryIntegration': os.environ.get('QWEN_AUDIO_MEMORY_PROVIDER') == 'graphiti'}
 
 
@@ -87,6 +91,7 @@ class Observe(Body):
     text: str = Field(min_length=1, max_length=200000)
     session_id: str = Field(min_length=1, max_length=200)
     event_id: str = Field(min_length=1, max_length=240)
+    model_family: Literal['qwen', 'openai'] | None = None
 
 
 class Apply(Body):
@@ -95,6 +100,7 @@ class Apply(Body):
     fact_ids: list[str] = Field(default_factory=list, max_length=20)
     session_id: str = Field(min_length=1, max_length=200)
     event_id: str = Field(min_length=1, max_length=240)
+    model_family: Literal['qwen', 'openai'] | None = None
 
 
 class Task(Body):
@@ -111,7 +117,8 @@ async def status(body: Body):
 
 @app.get('/memory/settings', dependencies=[Depends(authenticate)])
 async def memory_settings():
-    return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS), 'default_tier': 'medium'}
+    return {'tier': memory.tier, 'model': memory.model, 'models_by_family': memory.models(),
+            'available_tiers': list(TIERS), 'default_tier': 'medium'}
 
 @app.post('/memory/settings', dependencies=[Depends(authenticate)])
 async def post_memory_settings(body: MemorySettings):
@@ -125,7 +132,7 @@ async def update_memory_settings(body: MemorySettings):
     if path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body.tier + '\n')
-    return {'tier': memory.tier, 'model': memory.model, 'available_tiers': list(TIERS)}
+    return await memory_settings()
 
 
 @app.post('/memory/query', dependencies=[Depends(authenticate)])
@@ -137,14 +144,14 @@ async def query(body: Query, request: Request):
 @app.post('/memory/observe', dependencies=[Depends(authenticate)], status_code=202)
 async def observe(body: Observe, request: Request):
     return await memory.observe(body.text, user_id=body.owner_id, conversation_id=body.session_id, event_id=body.event_id,
-        connection_id=body.connection_id, end_reason=body.end_reason,
+        connection_id=body.connection_id, end_reason=body.end_reason, model_family=body.model_family,
         diagnostic_context={k:v for k,v in request.headers.items() if k in ('traceparent','tracestate')})
 
 
 @app.post('/memory/apply', dependencies=[Depends(authenticate)], status_code=202)
 async def apply(body: Apply):
     return memory.apply(body.action, user_id=body.owner_id, conversation_id=body.session_id,
-                        event_id=body.event_id, content=body.content, fact_ids=body.fact_ids)
+                        event_id=body.event_id, content=body.content, fact_ids=body.fact_ids, model_family=body.model_family)
 
 
 @app.post('/memory/task', dependencies=[Depends(authenticate)])
@@ -170,6 +177,7 @@ async def wait(body: Wait):
 
 class Classify(BaseModel):
     text: str = Field(min_length=1, max_length=200000)
+    model_family: Literal['qwen', 'openai'] | None = None
 
 
 class EditType(BaseModel):
@@ -178,4 +186,4 @@ class EditType(BaseModel):
 
 @app.post('/memory/classify', dependencies=[Depends(authenticate)])
 async def classify(body: Classify):
-    return await memory.classify(body.text)
+    return await memory.classify(body.text, body.model_family)

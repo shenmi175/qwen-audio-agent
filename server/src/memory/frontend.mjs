@@ -1,3 +1,4 @@
+import { loadMemoryVoicePrompt } from '../conversation/frontend-agent-context.mjs'
 import { readFileSync } from 'node:fs'
 import { buildMemoryContext } from './context.mjs'
 import {
@@ -11,7 +12,7 @@ export const memoryFrontend = {
   handlers: memoryToolHandlers,
   context: buildMemoryContext,
   instructions,
-  backgroundInstructions: graphitiVoiceInstructions,
+  get backgroundInstructions() { return loadMemoryVoicePrompt() || graphitiVoiceInstructions },
   backgroundDefinition: graphitiReadTool,
   capabilities: ({ memoryService }) => memoryService ? ['memory'] : [],
   // Keep read/write presentation semantics inside this optional feature. A
