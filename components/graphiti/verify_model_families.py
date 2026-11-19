@@ -25,16 +25,16 @@ async def main():
                               'elapsed_s': round(time.monotonic() - before, 2)}), flush=True)
         try:
             await provider.initialize()
-            await observe('我叫甄彤岚。', 'openai', 'initial')
+            await observe('我叫测试姓名甲。', 'openai', 'initial')
             recalled = await provider.query('用户的姓名', user_id=owner, conversation_id='new-session')
             if not recalled['facts']:
                 print(json.dumps({'episodes': await provider.episodes(group)}, ensure_ascii=False), flush=True)
-            assert any('甄彤岚' in f['fact'] for f in recalled['facts']), recalled
-            await observe('更正我的名字，甄彤岚写错了，我的名字是甄桐岚。', 'qwen', 'correction')
+            assert any('测试姓名甲' in f['fact'] for f in recalled['facts']), recalled
+            await observe('更正我的名字，测试姓名甲写错了，我的名字是测试姓名乙。', 'qwen', 'correction')
             recalled = await provider.query('用户的姓名', user_id=owner, conversation_id='after-correction')
-            assert any('甄桐岚' in f['fact'] for f in recalled['facts']), recalled
-            assert not any('甄彤岚' in f['fact'] for f in recalled['facts']), recalled
-            await observe('忘掉甄桐岚这个名字。', 'openai', 'forget')
+            assert any('测试姓名乙' in f['fact'] for f in recalled['facts']), recalled
+            assert not any('测试姓名甲' in f['fact'] for f in recalled['facts']), recalled
+            await observe('忘掉测试姓名乙这个名字。', 'openai', 'forget')
             recalled = await provider.query('用户的姓名', user_id=owner, conversation_id='after-forget')
             assert not recalled['facts'], recalled
             print(json.dumps({'stage': 'passed', 'elapsed_s': round(time.monotonic() - started, 2)}), flush=True)

@@ -129,12 +129,12 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('fake-secret', plan[0]['body'])
 
     async def test_natural_rename_is_an_episode_with_the_original_temporal_evidence(self):
-        utterance = '我养的猫以前叫银杏布丁，现在改名叫桂花芋圆了。'
+        utterance = '我养的猫以前叫测试宠物旧名，现在改名叫测试宠物新名了。'
         source = [{'id': 'rename', 'role': 'user', 'content': utterance}]
         request = {'message_id': 'rename', 'excerpt': utterance}
         candidate = {'action': 'remember', 'evidence': [request]}
         self.assertEqual(self.p.selection_plan(source, [
-            {'action': 'correct', 'request': request, 'target': '银杏布丁', 'evidence': [request]},
+            {'action': 'correct', 'request': request, 'target': '测试宠物旧名', 'evidence': [request]},
         ]), [])
         self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
         self.p.mutate = AsyncMock()
@@ -147,27 +147,27 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(name == 'get_episodes' for name, _ in self.mcp.calls), 3)
 
     async def test_explicit_correction_uses_only_the_uniquely_matched_fact(self):
-        utterance = '请更正银杏布丁这条记忆，我养的猫现在叫桂花芋圆。'
+        utterance = '请更正测试宠物旧名这条记忆，我养的猫现在叫测试宠物新名。'
         source = [{'id': 'correction', 'role': 'user', 'content': utterance}]
         candidate = {'action': 'correct', 'request': {'message_id': 'correction', 'excerpt': utterance},
-                     'target': '银杏布丁',
-                     'evidence': [{'message_id': 'correction', 'excerpt': '我养的猫现在叫桂花芋圆。'}]}
+                     'target': '测试宠物旧名',
+                     'evidence': [{'message_id': 'correction', 'excerpt': '我养的猫现在叫测试宠物新名。'}]}
         self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
-        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'old', 'fact': '猫叫银杏布丁'}]})
+        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'old', 'fact': '猫叫测试宠物旧名'}]})
         self.p.mutate = AsyncMock(return_value={'action': 'correct'})
         result = await self.p.agent(self.job, {'content': json.dumps(source)})
         self.assertEqual(result['action'], 'correct')
         self.assertEqual(self.p.mutate.call_args.args[2], ['old'])
-        self.assertEqual(self.p.mutate.call_args.kwargs['replacement'], '用户: 我养的猫现在叫桂花芋圆。')
+        self.assertEqual(self.p.mutate.call_args.kwargs['replacement'], '用户: 我养的猫现在叫测试宠物新名。')
         self.assertFalse(any(name == 'add_memory' for name, _ in self.mcp.calls))
 
     async def test_exact_duplicate_requires_a_committed_active_fact(self):
-        body = '用户: 我养的猫叫桂花芋圆。'
+        body = '用户: 我养的猫叫测试宠物新名。'
         self.mcp.saved = [{'name': 'previous', 'group_id': 'owner', 'uuid': 'ep1', 'content': body}]
         self.mcp.commit.set()
         self.p.entities = AsyncMock(return_value={'edges': [{'uuid': 'fact', 'episodes': ['ep1']}]})
         self.p.select = AsyncMock(return_value=[{'action': 'remember', 'body': body, 'stamp': None, 'ids': ['event'], 'target': ''}])
-        result = await self.p.agent(self.job, {'content': '我养的猫叫桂花芋圆。'})
+        result = await self.p.agent(self.job, {'content': '我养的猫叫测试宠物新名。'})
         self.assertEqual(result['action'], 'none')
         self.assertFalse(any(name == 'add_memory' for name, args in self.mcp.calls))
 
@@ -255,12 +255,12 @@ class Tests(unittest.IsolatedAsyncioTestCase):
             await self.p.add(self.job,'call','evidence')
 
     async def test_forget_requires_affirmative_user_intent_and_unique_fact(self):
-        words = '请忘掉桂花芋圆。'
+        words = '请忘掉测试宠物新名。'
         source = [{'id': 'u', 'role': 'user', 'content': words}]
-        candidate = {'action': 'forget', 'request': {'message_id': 'u', 'excerpt': words}, 'target': '桂花芋圆'}
+        candidate = {'action': 'forget', 'request': {'message_id': 'u', 'excerpt': words}, 'target': '测试宠物新名'}
         self.assertEqual(self.p.selection_plan([{**source[0], 'content': '不要' + words}], [candidate]), [])
         self.p.select = AsyncMock(return_value=self.p.selection_plan(source, [candidate]))
-        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'fact', 'fact': '猫叫桂花芋圆'}]})
+        self.p.scoped_read = AsyncMock(return_value={'facts': [{'uuid': 'fact', 'fact': '猫叫测试宠物新名'}]})
         self.p.mutate = AsyncMock(return_value={'action': 'forget'})
         result = await self.p.agent(self.job, {'content': json.dumps(source)})
         self.assertEqual(result['action'], 'forget')

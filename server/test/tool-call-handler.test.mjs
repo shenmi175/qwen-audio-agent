@@ -3203,7 +3203,7 @@ test('Graphiti read keeps its spoken result pending while input transcription fi
   const kit = harness({ memoryStore: {
     describe: () => ({ provider: { key: 'graphiti' } }),
     capabilities: () => ({ semanticQuery: true }),
-    query: async () => ({ memories: [], context: '用户的猫叫银杏布丁' }),
+    query: async () => ({ memories: [], context: '用户的猫叫测试宠物旧名' }),
   } })
   kit.transcripts.transcript = () => transcript.promise
   const pending = responseToolCall(kit.handler, 'delayed-read', 'memory', 'read-with-preamble', {

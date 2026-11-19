@@ -69,7 +69,7 @@ test('only an actual empty graph query yields not_found', async () => {
 })
 
 test('a stray Graphiti read during a forget or correction returns a tool-free receipt', async () => {
-  for (const text of ['请忘掉桂花芋圆这个名字。', '请更正桂花芋圆这条记忆，我养的猫叫银杏布丁。']) {
+  for (const text of ['请忘掉测试宠物新名这个名字。', '请更正测试宠物新名这条记忆，我养的猫叫测试宠物旧名。']) {
     const kit = harness()
     kit.transcripts.record('current', text)
     const output = await kit.read({ query: '我养的猫的名字' })
@@ -84,7 +84,7 @@ test('a stray Graphiti read during a forget or correction returns a tool-free re
 test('Graphiti refuses realtime writes even when the model sends legacy arguments', async () => {
   const kit = harness()
   const output = await kit.read({ action: 'replace', document: 'memory',
-    old_text: '我养的猫叫桂花芋圆', new_text: '', fact_id: 'fact-random' })
+    old_text: '我养的猫叫测试宠物新名', new_text: '', fact_id: 'fact-random' })
   assert.equal(output.status, 'deferred')
   assert.deepEqual(kit.queries, [])
   assert.deepEqual(kit.writes, [])
